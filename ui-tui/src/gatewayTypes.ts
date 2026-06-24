@@ -176,7 +176,7 @@ export interface SubscriptionStateResponse {
 
 export interface SubscriptionManageLinkResponse {
   ok: boolean
-  kind?: 'checkout' | 'portal'
+  kind?: 'checkout' | 'manage' | 'portal'
   url?: string
   error?: string
   message?: string

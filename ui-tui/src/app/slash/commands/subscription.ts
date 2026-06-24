@@ -24,7 +24,7 @@ const buildSubscriptionCtx = (ctx: SlashRunCtx, sys: Sys): SubscriptionOverlayCt
       .then(r => {
         if (r && r.ok && r.url) {
           openExternalUrl(r.url)
-          sys('Opening Stripe — finish the change in your browser; re-run /subscription to confirm.')
+          sys('Opening your subscription page in the browser — finish the change there; re-run /subscription to confirm.')
 
           return true
         }

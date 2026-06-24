@@ -230,7 +230,7 @@ function ConfirmScreen({ ctx, onBack, onClose, onPatch, overlay, s, t }: Confirm
   const isUpgrade = !s.current?.tier_id
 
   const [sel, setSel] = useState(0)
-  const items = ['Continue to Stripe', 'Cancel']
+  const items = ['Continue to your subscription page', 'Cancel']
   const [transitioned, setTransitioned] = useState(false)
 
   const confirm = () => {
@@ -295,7 +295,7 @@ function ConfirmScreen({ ctx, onBack, onClose, onPatch, overlay, s, t }: Confirm
           {targetTier.name} — {targetTier.dollars_per_month_display}/mo ({targetTier.monthly_credits} credits)
         </Text>
       )}
-      <Text color={t.color.muted}>You'll finish this change securely on Stripe in your browser.</Text>
+      <Text color={t.color.muted}>You'll finish this change securely on your subscription page in your browser.</Text>
 
       <Text />
       {items.map((label, i) => (
@@ -320,9 +320,9 @@ function HandoffScreen({ onClose, t }: { onClose: () => void; t: Theme }) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Opening Stripe…
+        Opening your subscription page…
       </Text>
-      <Text color={t.color.muted}>Opening Stripe in your browser…</Text>
+      <Text color={t.color.muted}>Opening your subscription page in the browser…</Text>
       <Text color={t.color.muted}>Finish on the page that just opened. Re-run /subscription to see the change.</Text>
       <Text />
       {footer('Esc close', t)}
