@@ -318,6 +318,55 @@ export function declareDefaultTree(tree: LayoutNode) {
   }
 }
 
+/**
+ * LIVE pane adoption — a `panes` contribution that isn't in the tree yet
+ * (a plugin registered after boot, incl. runtime-loaded ones) joins the
+ * zone its `placement` hint infers: it stacks with a settled pane of the
+ * same placement, falling back to the main zone, and fronts itself (the
+ * "your pane appeared" moment — happens once per pane lifetime, since the
+ * committed tree remembers it across boots; from then on user rearrangement
+ * wins, and plugin reloads keep the pane where the user left it).
+ */
+function adoptContributedPanes(): void {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return
+  }
+
+  const panes = registry.getArea('panes')
+  const placementOf = (paneId: string) => (panes.find(c => c.id === paneId)?.data as { placement?: string } | undefined)?.placement
+  const inTree = new Set(allPaneIds(tree))
+  const missing = panes.filter(c => !inTree.has(c.id))
+
+  if (missing.length === 0) {
+    return
+  }
+
+  let next = tree
+
+  for (const pane of missing) {
+    const placement = placementOf(pane.id) ?? 'right'
+    const sibling = allPaneIds(next).find(id => id !== pane.id && placementOf(id) === placement)
+    const main = panes.find(c => placementOf(c.id) === 'main')?.id
+    const target = findGroupOfPane(next, sibling ?? '')?.id ?? findGroupOfPane(next, main ?? '')?.id
+
+    if (target) {
+      next = insertAtGroup(next, target, pane.id, 'center') ?? next
+    }
+  }
+
+  if (next !== tree) {
+    commit(next)
+  }
+}
+
+/** Adopt now + on every registry change (call once from the app root). */
+export function watchContributedPanes(): void {
+  adoptContributedPanes()
+  registry.subscribe(adoptContributedPanes)
+}
+
 function commit(next: LayoutNode | null) {
   if (!next) {
     return
@@ -479,6 +528,8 @@ export function resetLayoutTree() {
   clearAllPaneSizeOverrides()
   $layoutTree.set(defaultTree)
   markActivePreset('default')
+  // Plugin panes aren't in the declared default — re-adopt by placement.
+  adoptContributedPanes()
 }
 
 // Dev hook for automation.

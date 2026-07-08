@@ -15,13 +15,15 @@ import {
   mirrorLayoutTree,
   resetLayoutTree,
   revealTreePane,
-  setTreePaneHidden
+  setTreePaneHidden,
+  watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
+import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { LayoutDashboard } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { readKey, writeKey } from '@/lib/storage'
@@ -193,6 +195,18 @@ registry.registerMany([
       keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
       run: toggleLayoutEditMode
     } satisfies PaletteContribution
+  },
+  // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
+  // without relaunching (same-id reloads dispose the previous incarnation).
+  {
+    id: 'plugins.reload',
+    area: PALETTE_AREA,
+    data: {
+      id: 'plugins.reload',
+      label: 'Reload desktop plugins',
+      keywords: ['plugins', 'reload', 'refresh', 'desktop'],
+      run: () => void discoverRuntimePlugins()
+    } satisfies PaletteContribution
   }
 ])
 
@@ -265,6 +279,10 @@ declareDefaultTree(DEFAULT_TREE)
 // deliberately overrides the core default (last writer wins). Third-party
 // runtime plugins will flow through the same discovery seam.
 discoverBundledPlugins()
+
+// Plugin panes join the tree by their `placement` hint the moment they
+// register — incl. runtime plugins arriving seconds after boot.
+watchContributedPanes()
 
 // ---------------------------------------------------------------------------
 // Titlebar chrome toggles -> tree. The TitlebarControls buttons keep their
