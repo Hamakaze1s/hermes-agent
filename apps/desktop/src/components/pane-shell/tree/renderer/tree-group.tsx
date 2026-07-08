@@ -105,10 +105,13 @@ export function TreeGroup({ node }: { node: GroupNode }) {
   const narrow = useStore($narrowViewport)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
-  // Chrome-toggled-off panes (and narrow-collapsed ones) drop out of the
-  // header; the active pane falls back to the first shown one (render-side —
-  // the tree keeps `active`).
-  const paneShown = (id: string) => !hiddenPanes.has(id) && !(narrow && paneChrome(paneFor(id)).collapsible)
+
+  // Unregistered (plugin not loaded), chrome-toggled-off, and narrow-collapsed
+  // panes drop out of the header; the active pane falls back to the first
+  // shown one (render-side — the tree keeps `active`).
+  const paneShown = (id: string) =>
+    Boolean(paneFor(id)) && !hiddenPanes.has(id) && !(narrow && paneChrome(paneFor(id)).collapsible)
+
   const shown = node.panes.filter(paneShown)
   const activeId = shown.includes(node.active) ? node.active : (shown[0] ?? node.active)
   const active = paneFor(activeId)

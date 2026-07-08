@@ -12,7 +12,7 @@
 import helloRuntimeSource from '../plugins/hello-runtime/plugin.runtime.js?raw'
 
 import { createPluginContext, type HermesPlugin } from './plugin'
-import { discoverRuntimePlugins, loadRuntimePlugin } from './runtime-loader'
+import { loadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
 
 const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{ts,tsx}', { eager: true })
 
@@ -42,7 +42,8 @@ export function discoverBundledPlugins(): void {
     }
   }
 
-  // The runtime pipeline, dogfooded on every boot + the on-disk plugin door.
+  // The runtime pipeline, dogfooded on every boot + the SELF-MAINTAINING
+  // disk door (fs-watched hot reloads, slow folder reconciliation).
   void loadRuntimePlugin(helloRuntimeSource, 'hello-runtime')
-  void discoverRuntimePlugins()
+  watchRuntimePlugins()
 }

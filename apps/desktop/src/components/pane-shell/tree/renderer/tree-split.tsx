@@ -50,10 +50,15 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
 
-  // A pane leaves the grid when a chrome toggle hides it, or when the
-  // viewport is narrow and the pane is collapsible (edge overlay instead).
+  // A pane leaves the grid when its contribution isn't registered (yet) — a
+  // runtime plugin's pane collapses until the plugin loads, then appears; no
+  // placeholder flash — when a chrome toggle hides it, or when the viewport
+  // is narrow and the pane is collapsible (edge overlay instead).
   const paneFor = (id: string) => panes.find(p => p.id === id)
-  const paneGone = (id: string) => hiddenPanes.has(id) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+
+  const paneGone = (id: string) =>
+    !paneFor(id) || hiddenPanes.has(id) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
   // Chrome-toggle collapse: a subtree whose every pane is gone renders

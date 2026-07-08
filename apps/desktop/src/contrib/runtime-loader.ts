@@ -94,12 +94,47 @@ export async function loadRuntimePlugin(source: string, origin: string, options:
   }
 }
 
-/**
- * Load every `<hermes home>/desktop-plugins/<name>/plugin.js` — the on-disk
- * plugin door (agent- or user-written). Quietly a no-op outside Electron or
- * before the gateway can report its home.
- */
-export async function discoverRuntimePlugins(): Promise<void> {
+// ---------------------------------------------------------------------------
+// The on-disk plugin door: `<hermes home>/desktop-plugins/<name>/plugin.js`
+// (agent- or user-written). SELF-MAINTAINING — no reload ceremony:
+//  - each plugin.js is fs-watched (the preview watcher IPC, debounced in
+//    main): saving the file hot-reloads the plugin in place;
+//  - a slow visible-tab poll of the directory picks up new folders (load +
+//    watch) and removed ones (unload + unwatch).
+// Panes land via placement adoption and STAY where the user drags them —
+// the tree treats not-yet-loaded pane ids as hidden, so boot and reload are
+// collapse -> appear, never a placeholder flash.
+// ---------------------------------------------------------------------------
+
+const DISK_POLL_MS = 5_000
+
+interface DiskPlugin {
+  file: string
+  /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
+  id: null | string
+  watchId: null | string
+}
+
+const disk = new Map<string, DiskPlugin>()
+let watching = false
+
+async function loadDiskPlugin(name: string, file: string): Promise<void> {
+  const desktop = window.hermesDesktop!
+  const entry = disk.get(name)
+
+  try {
+    const { text } = await desktop.readFileText(file)
+    const id = await loadRuntimePlugin(text, name)
+
+    if (entry) {
+      entry.id = id ?? entry.id
+    }
+  } catch {
+    // File vanished mid-read — the next scan reconciles.
+  }
+}
+
+async function scanDiskPlugins(): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -108,20 +143,85 @@ export async function discoverRuntimePlugins(): Promise<void> {
 
   try {
     const { hermes_home } = await getStatus()
-    const dir = `${hermes_home}/desktop-plugins`
-    const { entries } = await desktop.readDir(dir)
+    const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+    const seen = new Set<string>()
 
-    for (const entry of entries.filter(e => e.isDirectory)) {
-      const file = `${entry.path}/plugin.js`
+    for (const dir of entries.filter(e => e.isDirectory)) {
+      seen.add(dir.name)
+
+      if (disk.has(dir.name)) {
+        continue
+      }
+
+      const file = `${dir.path}/plugin.js`
 
       try {
-        const { text } = await desktop.readFileText(file)
-        await loadRuntimePlugin(text, entry.name)
+        await desktop.readFileText(file)
       } catch {
-        // No plugin.js in this folder — skip.
+        continue // No plugin.js (yet) — not a plugin folder.
+      }
+
+      const record: DiskPlugin = { file, id: null, watchId: null }
+      disk.set(dir.name, record)
+      await loadDiskPlugin(dir.name, file)
+
+      try {
+        record.watchId = (await desktop.watchPreviewFile(file)).id
+      } catch {
+        // Unwatchable — the poll still reconciles new folders; edits need a
+        // manual "Reload desktop plugins".
       }
     }
+
+    // Folder deleted -> plugin gone, cleanly.
+    for (const [name, record] of disk) {
+      if (seen.has(name)) {
+        continue
+      }
+
+      if (record.id) {
+        unloadRuntimePlugin(record.id)
+      }
+
+      if (record.watchId) {
+        void desktop.stopPreviewFileWatch(record.watchId)
+      }
+
+      disk.delete(name)
+    }
   } catch {
-    // No desktop-plugins dir (or no gateway yet) — nothing to load.
+    // No desktop-plugins dir (or no gateway yet) — nothing to reconcile.
   }
+}
+
+/** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
+export const discoverRuntimePlugins = scanDiskPlugins
+
+/** Start the self-maintaining disk door: initial scan, per-file hot reload,
+ *  slow folder reconciliation while the window is visible. Idempotent. */
+export function watchRuntimePlugins(): void {
+  const desktop = window.hermesDesktop
+
+  if (watching || !desktop) {
+    return
+  }
+
+  watching = true
+
+  desktop.onPreviewFileChanged(({ id }) => {
+    for (const [name, record] of disk) {
+      if (record.watchId === id) {
+        void loadDiskPlugin(name, record.file)
+
+        return
+      }
+    }
+  })
+
+  void scanDiskPlugins()
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      void scanDiskPlugins()
+    }
+  }, DISK_POLL_MS)
 }
