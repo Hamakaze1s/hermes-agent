@@ -60,9 +60,17 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 - `ctx.register({ id, area, order?, render?, data? })` — contribute UI.
   Key areas: `'statusBar.right'`/`'statusBar.left'` (chips),
   `'panes'` (layout zones — set `title` and
-  `data: { placement: 'left'|'right'|'bottom'|'main', width?, height? }`;
-  the pane auto-joins a matching zone), `PALETTE_AREA` (⌘K commands),
-  `KEYBINDS_AREA` (rebindable actions).
+  `data: { placement, dock?, width?, height? }`; the pane auto-joins a
+  matching zone), `PALETTE_AREA` (⌘K commands), `KEYBINDS_AREA` (rebindable
+  actions).
+- Pane placement: `placement: 'left'|'right'|'bottom'|'main'` is the
+  semantic role — the pane stacks (tabs) with existing panes of that role.
+  To land on a specific EDGE instead, add `dock: { pane, pos }` — the same
+  gesture as dragging onto a pane's drop chip. `pane` is any pane id
+  (`workspace` is the main thread; also `sessions`, `terminal`, `files`,
+  `review`, `logs`), `pos` is `'top'|'bottom'|'left'|'right'|'center'`.
+  E.g. "below the conversation" = `dock: { pane: 'workspace', pos: 'bottom' }`
+  — declare a `height` (e.g. `'200px'`) so it doesn't take half the zone.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
 - UI: `Tip`, `Button`, `Codicon`, `Input`, `StatusDot`, `LogView`, `cn`,
   `icons.*` — use these so the plugin looks native.
@@ -82,6 +90,19 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 
 ## Pitfalls
 
+- NEVER hardcode colors or backgrounds (`#000`, `black`, `rgb(...)`). Panes
+  already sit on the app's editor background — leave the background alone
+  and use theme variables for everything else: `var(--ui-text-secondary)`,
+  `var(--ui-text-quaternary)`, `var(--ui-stroke-secondary)`,
+  `var(--ui-accent)`. For canvas drawing, resolve them once with
+  `getComputedStyle(canvas).getPropertyValue('--ui-accent')`.
+- Reference only what you imported — a component you forgot to import
+  (e.g. `StatusDot`) is a ReferenceError at render. Double-check every
+  identifier in your `jsx()` calls appears in the import line.
+- Canvas panes MUST track their container with a `ResizeObserver` and
+  re-size the canvas (width/height attributes, not just CSS) — panes resize
+  constantly (sash drags, layout switches); a mount-time-only size leaves
+  blank space or blurry scaling.
 - JSX syntax will not parse — the file loads uncompiled. Use
   `jsx('div', { children: ... })` from `react/jsx-runtime`.
 - Do not import anything except `@hermes/plugin-sdk`, `react`, and

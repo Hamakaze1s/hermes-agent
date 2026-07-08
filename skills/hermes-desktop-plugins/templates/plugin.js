@@ -48,6 +48,9 @@ export default {
   name: 'My Plugin',
   register(ctx) {
     // A layout pane — auto-placed by the placement hint; user can drag it.
+    // To land on a specific edge instead of stacking, add a dock gesture,
+    // e.g. below the conversation:
+    //   data: { placement: 'bottom', dock: { pane: 'workspace', pos: 'bottom' }, height: '200px' }
     ctx.register({
       id: 'pane',
       area: 'panes',
