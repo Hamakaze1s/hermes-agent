@@ -114,6 +114,7 @@ def _codex_curated_models() -> list[str]:
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
     "grok-build-0.1",
+    "grok-4.5",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
@@ -122,6 +123,7 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 # Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
 _XAI_CURATED_EXTRAS: list[str] = [
+    "grok-4.5",  # early access — not yet in models.dev / public listings
     "grok-composer-2.5-fast",
 ]
 
