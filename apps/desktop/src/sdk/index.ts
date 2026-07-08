@@ -21,6 +21,7 @@
 import { atom, type ReadableAtom } from 'nanostores'
 
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
+import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -86,6 +87,11 @@ export const host = {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 
+  /** HEAR the gateway stream (message deltas, session lifecycle, tool
+   *  activity, …) by event type — `'*'` for everything. Returns a disposer.
+   *  Listeners are isolated; a throw can't affect app dispatch. */
+  onEvent: onGatewayEvent,
+
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
   restartGateway: async () => runGatewayRestart(),
 
@@ -107,35 +113,49 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { StatusbarItem } from '@/app/shell/statusbar-controls'
+// Every contribution surface, plugin-reachable: register keybinds, palette
+// commands, routes, themes, panes, composer extensions, and bar items with
+// the same area ids + payload types core uses.
+export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddleware } from '@/app/chat/composer/contrib'
 
 // -- ui: the design language --------------------------------------------------
+
+export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+export { type RouteContribution, ROUTES_AREA } from '@/app/routes'
+export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Button } from '@/components/ui/button'
-
 export { Codicon } from '@/components/ui/codicon'
 export { DecodeText } from '@/components/ui/decode-text'
 export { Input } from '@/components/ui/input'
 export { LogView } from '@/components/ui/log-view'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-export type { HermesPlugin, PluginContext, PluginContribution } from '@/contrib/plugin'
+export type { GatewayEventListener } from '@/contrib/events'
+
+// -- contracts ----------------------------------------------------------------
+
+export type { HermesPlugin, PluginContext, PluginContribution, PluginStorage } from '@/contrib/plugin'
 export type { Contribution } from '@/contrib/types'
 /** Localized copy — plugins reuse the app's strings (and stay translatable). */
 export { useI18n } from '@/i18n'
 export { triggerHaptic as haptic } from '@/lib/haptics'
-
-// -- contracts ----------------------------------------------------------------
-
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
+export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+
+export const PANES_AREA = 'panes'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 export { cn } from '@/lib/utils'
-export type { StatusResponse } from '@/types/hermes'
+export { THEMES_AREA } from '@/themes/user-themes'
+export type { RpcEvent, StatusResponse } from '@/types/hermes'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** Plugin-local reactive state (share between a trigger and its panel, poll
