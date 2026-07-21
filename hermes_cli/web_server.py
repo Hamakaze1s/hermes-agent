@@ -17622,7 +17622,11 @@ async def pty_ws(ws: WebSocket) -> None:
     # one with the updated argv/env (HERMES_TUI_RESUME). Same-target
     # reconnection (transient transport drop, page refresh) reattaches
     # to the still-living PTY, preserving continuity.
-    target_id = f"{resume or ''}|{profile or ''}" if (resume or profile) else None
+    # Use the resolved resume (from env) rather than the raw query param,
+    # and only set target_id when the resume was explicitly requested
+    # (raw_resume), not when it came from the active-session fallback.
+    _resolved_resume = (env or {}).get("HERMES_TUI_RESUME", "") if raw_resume else ""
+    target_id = f"{_resolved_resume}|{profile or ''}" if (_resolved_resume or profile) else None
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
             attach_token, spawn=_spawn, target_id=target_id
