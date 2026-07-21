@@ -177,7 +177,22 @@ MEMORY_GUIDANCE = (
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
     "Imperative phrasing gets re-read as a directive in later sessions and can "
     "cause repeated work or override the user's current request. Procedures and "
-    "workflows belong in skills, not memory."
+    "workflows belong in skills, not memory.\n"
+    "When deciding where to save information, use this litmus test: "
+    "if it describes *how to do something* (a detection method, a fix procedure, "
+    "a configuration step, a repeatable workflow), it belongs in a skill — "
+    "save it with skill_manage. "
+    "If it describes *the state of the world* (what is installed, where things "
+    "live, what the user prefers, a tool quirk), it belongs in memory — "
+    "save it with the memory tool.\n"
+    "The user profile (target='user' in the memory tool) is reserved for "
+    "who the user is: communication style, work habits, personal values, "
+    "and formatting preferences. "
+    "Do NOT save operation disciplines or technical facts there — those "
+    "belong in memory (target='memory') or skills. "
+    "Examples — belongs in user profile: 'Prefers Chinese responses', "
+    "'Dislikes emoji'. Does NOT belong: 'Must serialize subagent tasks', "
+    "'Kaiji detection steps', 'Fail2ban config requirements'."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -187,12 +202,19 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
+    "Before starting an unfamiliar task, scan the <available_skills> list in "
+    "the Skills block above. If a skill name or description matches the topic, "
+    "load it with skill_view(name) and follow its instructions — this is the "
+    "first step, before web search or trial-and-error.\n"
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
     "skill with skill_manage so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Skills that aren't maintained become liabilities.\n"
+    "When creating, editing, or deleting a custom skill via skill_manage, also update "
+    "the `skill-catalog` skill's SKILL.md — add new entries, update descriptions, "
+    "or remove deleted skills so the catalog stays accurate."
 )
 
 KANBAN_GUIDANCE = (
@@ -343,6 +365,16 @@ TASK_COMPLETION_GUIDANCE = (
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
     "is always better than inventing a result."
+)
+
+AUTHORIZATION_GUIDANCE = (
+    "# Authorization before action\n"
+    "When the user requests a plan, proposal, or design, output the plan "
+    "as text and stop — do not execute any part of it. "
+    "Wait for the user to explicitly authorize before proceeding. "
+    "'Give me a plan', 'Propose a solution', 'How would you approach this' "
+    "are requests for a proposal, not a mandate to execute. "
+    "When in doubt whether to proceed, ask rather than assume."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

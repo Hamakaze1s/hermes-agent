@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
+    AUTHORIZATION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -206,6 +207,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal authorization-before-action guidance.  Tells the model to
+    # treat plan/proposal/design requests as proposals only — no execution
+    # without explicit user approval.  Injected for every session with tools
+    # loaded, no config gate (this is a safety invariant, not a preference).
+    if agent.valid_tool_names:
+        stable_parts.append(AUTHORIZATION_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one

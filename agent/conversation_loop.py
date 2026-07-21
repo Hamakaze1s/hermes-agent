@@ -723,6 +723,9 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Import early so code-skew-return path (below) can reference it
+    from agent.turn_finalizer import finalize_turn
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # ── Code skew guard (#68178) ───────────────────────────────
         # Check whether the source tree has been updated underneath this
@@ -5841,7 +5844,7 @@ def run_conversation(
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
-    from agent.turn_finalizer import finalize_turn
+    # (imported above the while-loop for code-skew-return path coverage)
     return finalize_turn(
         agent,
         final_response=final_response,
