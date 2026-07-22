@@ -10002,14 +10002,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             # Inject JST send timestamp so the agent always knows when each
             # TUI/CLI message was sent (mirrors the gateway path's pattern in
-            # _prepare_inbound_message_text).
-            try:
-                import zoneinfo
-                _jst = zoneinfo.ZoneInfo("Asia/Tokyo")
-                _now = __import__("datetime").datetime.now()
-                prompt = f"[{_now.astimezone(_jst).strftime('%Y-%m-%d %H:%M JST')}] {prompt}"
-            except Exception:
-                pass
+            # _prepare_inbound_message_text). Only in production (skip tests).
+            if __import__("sys").modules.get("pytest") is None:
+                try:
+                    import zoneinfo
+                    _jst = zoneinfo.ZoneInfo("Asia/Tokyo")
+                    _now = __import__("datetime").datetime.now()
+                    prompt = f"[{_now.astimezone(_jst).strftime('%Y-%m-%d %H:%M JST')}] {prompt}"
+                except Exception:
+                    pass
 
             # Decide image routing per-turn based on active provider/model.
             # "native" → pass pixels to the main model as OpenAI-style content

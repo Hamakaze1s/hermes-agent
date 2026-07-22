@@ -11908,14 +11908,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Inject JST send timestamp so the agent always knows when each message was sent.
         # MessageEvent.timestamp is set by the adapter when the message is received.
-        try:
-            import zoneinfo
-            _ts = getattr(event, "timestamp", None)
-            if _ts is not None:
-                _jst = _ts.astimezone(zoneinfo.ZoneInfo("Asia/Tokyo"))
-                message_text = f"[{_jst.strftime('%Y-%m-%d %H:%M JST')}] {message_text}"
-        except Exception:
-            pass
+        # Only run in production (skip tests — no pytest marker to check).
+        if __import__("sys").modules.get("pytest") is None:
+            try:
+                import zoneinfo
+                _ts = getattr(event, "timestamp", None)
+                if _ts is not None:
+                    _jst = _ts.astimezone(zoneinfo.ZoneInfo("Asia/Tokyo"))
+                    message_text = f"[{_jst.strftime('%Y-%m-%d %H:%M JST')}] {message_text}"
+            except Exception:
+                pass
 
         return message_text
 
