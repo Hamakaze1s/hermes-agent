@@ -495,6 +495,10 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     agent = _make_agent(
         valid_tool_names=["read_file"],
         _parallel_tool_call_guidance=False,
+        # Local patch P2: this test asserts an exact prompt-part list, so it opts
+        # out of the authorization block the same way it opts out of the
+        # parallel-tool-call block. (Production injects both by default.)
+        _authorization_guidance=False,
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")

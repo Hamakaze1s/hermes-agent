@@ -216,7 +216,7 @@ def build_memory_guidance(
         "and corrections for that kind of work — belongs in skills, not in memory, "
         "even when skill writing is unavailable. "
     )
-    return frame + skill_routing + (
+    guidance = frame + skill_routing + (
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "
@@ -228,6 +228,25 @@ def build_memory_guidance(
         "request). A fact stale within a week belongs in session history; "
         "procedures and workflows belong in skills."
     )
+    if memory_enabled:
+        # Local patch P1a (knowledge-arch 2.0): the mem0 default-write pointer.
+        # mem0 is the broad store; the built-in `memory` tool stays the
+        # every-session exception. Appended to the BUILDER's output on purpose —
+        # the runtime injects build_memory_guidance() directly
+        # (system_prompt._tool_guidance_block), so attaching this to the legacy
+        # MEMORY_GUIDANCE alias alone would never reach the model. Skipped when
+        # the built-in store is disabled (user-profile-only shape), where the
+        # pointer would name a store that is not there.
+        guidance += (
+            "\n"
+            "Everything else — facts, episodic events, short-term interests, "
+            "relations — goes to **mem0** (broad memory, the default write "
+            "target; tag new entries with type metadata, e.g. fact / "
+            "bili_watch / bili_interest). Memory is a short list of what you "
+            "must remember every turn — not a catalog of what exists or a log "
+            "of what you did."
+        )
+    return guidance
 
 
 # Legacy aliases still imported by call sites and tests.
@@ -256,11 +275,22 @@ SESSION_SEARCH_GUIDANCE = (
 # the compaction-pruning contract lives here — nothing else teaches it.
 SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
+    "Before starting an unfamiliar task, scan the <available_skills> list in "
+    "the Skills block above. If a skill name or description matches the topic, "
+    "load it with skill_view(name) and follow its instructions — this is the "
+    "first step, before web search or trial-and-error.\n"
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
     f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
-    "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
+    "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions.\n"
+    "When creating, editing, or deleting a custom skill via skill_manage, "
+    "also update the `skill-catalog` skill's SKILL.md — add new entries, "
+    "update descriptions, or remove deleted skills so the catalog stays "
+    "accurate.\n"
+    "World state (server inventory, installed services, IPs, topology) "
+    "also belongs in skills — save it in server-arch or the relevant "
+    "domain skill's SKILL.md or references/."
 )
 
 KANBAN_GUIDANCE = (
@@ -394,6 +424,19 @@ TASK_COMPLETION_GUIDANCE = (
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
+
+# Local patch P2 (kept across the upstream jump): authorization-before-action.
+# Ships in the cached system prompt — keep tight.
+AUTHORIZATION_GUIDANCE = (
+    "# Authorization before action\n"
+    "When the user requests a plan, proposal, or design, output the plan "
+    "as text and stop — do not execute any part of it. "
+    "Wait for the user to explicitly authorize before proceeding. "
+    "'Give me a plan', 'Propose a solution', 'How would you approach this' "
+    "are requests for a proposal, not a mandate to execute. "
+    "When in doubt whether to proceed, ask rather than assume."
+)
+
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
 # concurrently. Supersedes the former Google-only bullet so no model receives the steer twice.

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    AUTHORIZATION_GUIDANCE, DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
@@ -557,6 +557,11 @@ def _guidance_parts(agent: Any) -> list[str]:
         parts += [
             text for flag, text in (
                 ("_task_completion_guidance", TASK_COMPLETION_GUIDANCE),
+                # Local patch P2: universal authorization-before-action guidance
+                # (plan/proposal/design requests are proposals only — no execution
+                # without explicit approval). Same gate as the other universal
+                # blocks so a session that opts out stays byte-identical.
+                ("_authorization_guidance", AUTHORIZATION_GUIDANCE),
                 ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
             ) if getattr(agent, flag, True)
         ]
