@@ -18,6 +18,9 @@ its Anthropic translation, with a hard 400:
     model reject the OBJECT-form ``response_format.json_schema`` by shape --
     ``422 ... body.response_format.json_schema: str type expected`` -- instead
     of naming the feature, so the error never mentions an unsupported option.
+  * OpenCode's relay answers from some of its upstream endpoints with an
+    opaque ``{"model": "<id>"}`` body — no phrasing to match, so the shape is
+    recognized instead (``_is_model_echo_error``). Same field, same reaction.
 
 Callers tolerate an unconstrained reply: the title prompt demands bare JSON
 and ``_extract_title_text`` has a loose-JSON fallback. The fix is reactive,
@@ -33,6 +36,7 @@ import pytest
 from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
+    _is_model_echo_error,
     _is_structured_output_rejection,
     _without_structured_output_format,
 )
@@ -51,6 +55,15 @@ _TITLE_RESPONSE_FORMAT = {
         },
     },
 }
+
+
+class _ApiStatusError(Exception):
+    """Stand-in for ``openai.APIStatusError`` — status code plus parsed body."""
+
+    def __init__(self, body, status_code=400):
+        self.body = body
+        self.status_code = status_code
+        super().__init__(f"Error code: {status_code} - {body}")
 
 
 class TestIsStructuredOutputRejection:
@@ -100,6 +113,54 @@ class TestIsStructuredOutputRejection:
     def test_does_not_match_non_400_statuses(self):
         exc = RuntimeError("output_config: Extra inputs are not permitted")
         exc.status_code = 500
+        assert _is_structured_output_rejection(exc) is False
+
+
+class TestModelEchoRejection:
+    """The OpenCode relay's opaque 400: body is the echoed model id, nothing else.
+
+    Live shape (2026-10-12, verified by replaying an identical title request with
+    and without ``response_format`` against one session-affinity id):
+
+        {"model": "deepseek-v4.1-flash"}
+
+    No phrasing to match, so the detector keys on the shape. The retry stays safe
+    because callers only strip the field when the request actually carried it.
+    """
+
+    def test_matches_the_live_opencode_body(self):
+        exc = _ApiStatusError({"model": "deepseek-v4.1-flash"})
+        assert _is_model_echo_error(exc) is True
+        assert _is_structured_output_rejection(exc) is True
+
+    def test_matches_the_same_body_carried_as_text(self):
+        exc = _ApiStatusError('{"model": "deepseek-v4.1-flash"}')
+        assert _is_structured_output_rejection(exc) is True
+
+    def test_requires_an_error_status(self):
+        assert _is_model_echo_error(_ApiStatusError({"model": "m"}, status_code=200)) is False
+        assert _is_model_echo_error(_ApiStatusError({"model": "m"}, status_code=429)) is False
+        # No status at all is not enough evidence to drop the schema contract.
+        assert _is_model_echo_error(RuntimeError("{'model': 'm'}")) is False
+
+    def test_requires_the_body_to_be_a_non_empty_mapping(self):
+        assert _is_model_echo_error(_ApiStatusError({})) is False
+        assert _is_model_echo_error(_ApiStatusError({"error": {"message": "boom"}})) is False
+        assert _is_model_echo_error(_ApiStatusError("not json")) is False
+
+    @pytest.mark.parametrize("body", [
+        {"model": "m", "error": {"message": "boom"}},
+        {"model": "m", "message": "boom"},
+        {"model": "m", "detail": "invalid request"},
+        {"model": "m", "type": "invalid_request_error"},
+        {"model": "m", "code": "invalid_request_error"},
+        {"model": "m", "param": "response_format"},
+    ])
+    def test_bodies_that_explain_themselves_are_not_opaque(self, body):
+        assert _is_model_echo_error(_ApiStatusError(body)) is False
+
+    def test_unrelated_400_without_model_echo_is_untouched(self):
+        exc = _ApiStatusError({"error": {"message": "Invalid value: 'tool'"}})
         assert _is_structured_output_rejection(exc) is False
 
 
@@ -195,6 +256,68 @@ class TestCallLlmStructuredOutputRetry:
         assert "response_format" not in retry_kwargs
         assert retry_kwargs["model"] == first_kwargs["model"]
 
+    def test_retries_once_on_the_opencode_model_echo_400(self):
+        """The live 2026-10-12 OpenCode shape retries instead of hard-failing.
+
+        Body is the echoed model id and nothing else, so the retry decision is
+        shape-based; the request's own ``response_format`` is what authorizes it.
+        """
+        client = MagicMock()
+        client.base_url = "https://opencode.ai/zen/go/v1"
+        client.chat.completions.create.side_effect = [
+            _ApiStatusError({"model": "deepseek-v4.1-flash"}),
+            _dummy_response(),
+        ]
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"response_format": dict(_TITLE_RESPONSE_FORMAT)},
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert "response_format" in (first_kwargs.get("extra_body") or {})
+        assert "response_format" not in (retry_kwargs.get("extra_body") or {})
+        assert "response_format" not in retry_kwargs
+
+    def test_opaque_400_does_not_retry_when_no_field_was_sent(self):
+        """Shape alone must not authorize a retry the scrubber can't change."""
+        client = MagicMock()
+        client.base_url = "https://opencode.ai/zen/go/v1"
+        client.chat.completions.create.side_effect = _ApiStatusError(
+            {"model": "deepseek-v4.1-flash"}
+        )
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+            patch("agent.auxiliary_client._try_payment_fallback",
+                  return_value=None),
+        ):
+            with pytest.raises(Exception, match="deepseek-v4.1-flash"):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "x"}],
+                    max_tokens=64,
+                )
+        assert client.chat.completions.create.call_count == 1
+
     def test_unrelated_400_does_not_strip_response_format(self):
         """Unrelated 400s must not silently downgrade the schema contract."""
         client = MagicMock()
@@ -286,6 +409,36 @@ class TestAsyncCallLlmStructuredOutputRetry:
         first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert "response_format" in (first_kwargs.get("extra_body") or {})
+        assert "response_format" not in (retry_kwargs.get("extra_body") or {})
+        assert "response_format" not in retry_kwargs
+
+    @pytest.mark.asyncio
+    async def test_async_retries_once_on_the_opencode_model_echo_400(self):
+        client = MagicMock()
+        client.base_url = "https://opencode.ai/zen/go/v1"
+        client.chat.completions.create = AsyncMock(side_effect=[
+            _ApiStatusError({"model": "deepseek-v4.1-flash"}),
+            _dummy_response(),
+        ])
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = await async_call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"response_format": dict(_TITLE_RESPONSE_FORMAT)},
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.await_count == 2
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert "response_format" not in (retry_kwargs.get("extra_body") or {})
         assert "response_format" not in retry_kwargs
 

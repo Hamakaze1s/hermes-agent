@@ -3379,10 +3379,71 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     return param_lower in err_lower and _contains_any(err_lower, UNSUPPORTED_PARAM_MARKERS)
 
 
+# Error-body keys that carry an explanation a caller can act on. A body with
+# none of them says nothing about what went wrong.
+_INFORMATIVE_ERROR_KEYS = frozenset({
+    "error", "errors", "message", "msg", "detail", "details", "type",
+    "code", "param", "reason", "status_message",
+})
+
+
+def _error_body_dict(exc: Exception) -> Optional[dict]:
+    """Parsed JSON body of an API error, when the exception exposes one.
+
+    The OpenAI SDK attaches ``body`` (already parsed) to its status errors; a
+    plain exception may carry raw text instead. Only a dict is useful here —
+    anything else has no keys to reason about.
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        return body
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _is_model_echo_error(exc: Exception) -> bool:
+    """True for a 400/422 whose body carries nothing but the echoed model id.
+
+    OpenCode's relay round-robins one model across several upstream endpoints,
+    and they disagree about ``response_format``. Some endpoints (``novita-
+    deepseek`` for ``deepseek-v4.1-flash``) answer a request that carries the
+    field with a body of exactly ``{"model": "<id>"}`` — established by
+    replaying the same request with and without it against one session-affinity
+    id: the field is the only difference, and the opaque 400 disappears
+    without it.
+
+    No text matcher can key on that body, so the rejection is recognized by
+    shape: an error status, a dict body, the model id echoed, and none of the
+    keys that would explain anything else. Callers only retry when the request
+    actually carried ``response_format`` (see
+    :func:`_without_structured_output_format`), which is what makes the narrow
+    shape a decision rather than a guess.
+    """
+    if getattr(exc, "status_code", None) not in {400, 422}:
+        return False
+    body = _error_body_dict(exc)
+    if not body:
+        return False
+    keys = {str(key).lower() for key in body}
+    if "model" not in keys:
+        return False
+    return not (keys & _INFORMATIVE_ERROR_KEYS)
+
+
 def _is_structured_output_rejection(exc: Exception) -> bool:
     """Provider 400/422 rejecting the structured-output field, on either wire: OpenAI ``response_format``
     (incl. vLLM's ``guided_grammar``/xgrammar failures) or Anthropic ``output_config.format`` ("Extra inputs
-    are not permitted"). Callers tolerate an unconstrained reply, so the reaction is one retry without it."""
+    are not permitted"). Callers tolerate an unconstrained reply, so the reaction is one retry without it.
+
+    Local patch P13 (2026-10-12): an **opaque model-echo 400** (OpenCode relay, body ``{"model": "<id>"}``
+    and nothing else) carries no phrasing at all — see :func:`_is_model_echo_error`. At this layer it is
+    indistinguishable from a structured-output rejection, and the caller retries only when the request
+    actually sent the field, so it is handled the same way."""
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
@@ -3407,6 +3468,11 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     # "Unknown name"/"Invalid value" 400 on response_schema / response_json_schema for a schema the
     # surface cannot express. Same remedy: one retry without the format.
     if _contains_any(err_lower, ("response mime type", "response_schema", "response_json_schema")):
+        return True
+    # An opaque model-echo 400 (OpenCode relay: body ``{"model": "<id>"}`` and nothing else) carries no
+    # phrasing at all, so it is matched by shape. Safe because the caller strips the field only when the
+    # request actually sent it.
+    if _is_model_echo_error(exc):
         return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
