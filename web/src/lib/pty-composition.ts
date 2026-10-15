@@ -122,3 +122,65 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     },
   };
 }
+
+export type PtyCompositionForwarder = ReturnType<typeof createPtyCompositionForwarder>;
+
+export interface PtyCompositionBridgeHooks {
+  // Opens the mobile line-replacement window for the next terminal input.
+  armReplacementWindow: () => void;
+  isReplacementInput: (input: InputEvent) => boolean;
+}
+
+/**
+ * Wires xterm's helper textarea to the forwarder. Returns the cleanup.
+ *
+ * xterm 6 sends a composition as `textarea.value.substring(start)`, with
+ * `start` the mirror length recorded at compositionstart. The DOM inserts the
+ * commit at the caret, and the dashboard runs screenReaderMode, so the caret
+ * follows the arrow keys: a commit made mid-line slices out a shifted tail
+ * ("调奇怪）" for "语调奇怪") that the forwarder cannot match, and the PTY gets
+ * both. The mirror is rewritten only when that slice disagrees with the
+ * commit, so xterm still delivers the word and the forwarder drops its
+ * fallback. Text that follows an appended commit in the slice (a character
+ * its key added before compositionend, xterm.js #3191) is kept; a mid-line
+ * slice is replaced by the commit alone, so such a character is not preserved
+ * there. A no-op once xterm reads the compositionend data itself
+ * (xtermjs/xterm.js#6049).
+ */
+export function bindPtyCompositionBridge(
+  textarea: HTMLTextAreaElement,
+  forwarder: PtyCompositionForwarder,
+  hooks: PtyCompositionBridgeHooks,
+): () => void {
+  let start = 0;
+  // Same value xterm's own compositionstart listener records.
+  const noteStart = () => {
+    start = textarea.value.length;
+  };
+  const alignMirrorToCommit = (data: string) => {
+    const slice = textarea.value.substring(start);
+    if (slice === data) return;
+    const extra = slice.startsWith(data) ? slice.slice(data.length) : "";
+    textarea.value = textarea.value.slice(0, start) + data + extra;
+  };
+  const onBeforeInput = (ev: Event) => {
+    if (hooks.isReplacementInput(ev as InputEvent)) hooks.armReplacementWindow();
+  };
+  const onCompositionEnd = (ev: CompositionEvent) => {
+    hooks.armReplacementWindow();
+    // An empty compositionend data gives nothing to align to, and assigning
+    // textarea.value also moves the caret to the end, so leave the DOM and
+    // xterm's own slice untouched.
+    if (ev.data) alignMirrorToCommit(ev.data);
+    forwarder.onCompositionEnd(ev.data);
+  };
+
+  textarea.addEventListener("beforeinput", onBeforeInput, true);
+  textarea.addEventListener("compositionstart", noteStart, true);
+  textarea.addEventListener("compositionend", onCompositionEnd, true);
+  return () => {
+    textarea.removeEventListener("beforeinput", onBeforeInput, true);
+    textarea.removeEventListener("compositionstart", noteStart, true);
+    textarea.removeEventListener("compositionend", onCompositionEnd, true);
+  };
+}
