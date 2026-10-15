@@ -25,6 +25,14 @@ ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 
 
 def session_source_for(platform: Optional[str]) -> str:
+    # delegate_task subagents must always record as "subagent". The
+    # HERMES_SESSION_SOURCE ContextVar set by the parent session (tui/desktop/
+    # cli/...) leaks into the delegation worker thread and would otherwise
+    # mislabel the child row as a user-facing session, defeating every
+    # source-based subagent filter (session.list, session.most_recent,
+    # dashboard PTY resume, session_search _HIDDEN_SESSION_SOURCES).
+    if platform == "subagent":
+        return "subagent"
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
     single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
     explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
