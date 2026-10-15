@@ -47,8 +47,36 @@ _PTY_READ_CHUNK_TIMEOUT = 0.2
 # loop (keeps dashboard idle CPU low).
 # A positive sleep lets other coroutines run and keeps dashboard idle CPU low (#42627).
 _PTY_IDLE_BACKOFF = 0.05
+
+
+def _pty_idle_ttl_seconds(default: float = 30 * 60) -> float:
+    """Keep-alive PTY idle TTL from ``dashboard.pty_idle_ttl_seconds``.
+
+    Local patch P12 (2026-09-30, kept across the upstream jump): the TTL was
+    hardcoded at 30 minutes. A detached TUI frontend (node entry.js, 150-900
+    MB) holds its heap for the whole window, so memory-tight hosts want to
+    shorten it. This is the only consumer; the value is snapshotted into
+    PTY_REGISTRY at import time (a config change applies on the next dashboard
+    start). Missing/zero/negative/garbage values fall back to the upstream
+    default so a typo can never disable the reaper.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("dashboard") or {}
+        value = raw.get("pty_idle_ttl_seconds")
+        if value is None:
+            return default
+        ttl = float(value)
+        if ttl > 0:
+            return ttl
+    except Exception:
+        pass
+    return default
+
+
 PTY_REGISTRY = PtySessionRegistry(
-    ttl=30 * 60, max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
+    ttl=_pty_idle_ttl_seconds(), max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
 
 
 async def _close_stalled_pty_input(ws: WebSocket, *, path: str) -> None:

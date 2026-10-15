@@ -1033,6 +1033,13 @@ DEFAULT_CONFIG = {
         # leaves disconnected sessions ``ended_at IS NULL`` forever — phantom "active" rows in /resume and
         # dashboards. See #65194.
         "startup_orphan_sweep": True,
+        # Local patch P12 (2026-09-30, kept across the upstream jump): idle TTL
+        # (seconds) for the keep-alive PTY sessions behind the dashboard /chat
+        # terminal. A TUI frontend (node entry.js, 150-900 MB) whose client
+        # vanished — e.g. a failed resume — is reaped this long after it
+        # detached; upstream hardcodes 30 minutes. Values <= 0 fall back to the
+        # 30-minute default, so the key can never disable the reaper.
+        "pty_idle_ttl_seconds": 30 * 60,
         # OAuth gate (engaged when --host is set and --insecure is not), read by the Nous Portal
         # plugin. Env HERMES_DASHBOARD_OAUTH_CLIENT_ID / HERMES_DASHBOARD_PORTAL_URL win when
         # non-empty. Empty client_id = no provider; empty portal_url = production.
