@@ -721,6 +721,26 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
+    # Local patch P3a: model-context timestamps for the TUI/CLI path, via upstream's
+    # renderer + the shared ``timezone`` config, so the format, the timezone source and
+    # the replay-strip behaviour match the gateway's own message_timestamps mechanism
+    # (which only covers the gateway path). Gated on the same config key
+    # (``gateway.message_timestamps.enabled``, default off); the displayed and persisted
+    # prompt stays clean because only the model-facing copy is stamped.
+    if isinstance(run_message, str):
+        try:
+            from gateway.message_timestamps import render_user_content_with_timestamp
+            from gateway.run import _load_gateway_config, _message_timestamps_enabled
+            from hermes_time import get_timezone
+
+            if _message_timestamps_enabled(_load_gateway_config()):
+                run_message = render_user_content_with_timestamp(
+                    run_message, time.time(), tz=get_timezone()
+                )
+        except Exception as exc:
+            # Never silently disable the stamp: a broken import or config read
+            # would otherwise drop timestamps with no trace anywhere.
+            logger.warning("message timestamp injection failed (TUI): %s", exc, exc_info=True)
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
