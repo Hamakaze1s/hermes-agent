@@ -54,6 +54,22 @@ class OpenCodeGoProfile(ProviderProfile):
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
         return self.default_max_tokens if cap is None else cap
 
+    def default_vision_model(self):  # type: ignore[override]
+        """DeepSeek V4.1 Flash — the opencode-go relay's vision model.
+
+        Registered so the auxiliary vision auto chain can discover it without
+        an explicit ``auxiliary.vision`` block: when the main chat model is
+        text-only, ``vision_analyze`` falls back to this model, while
+        vision-capable chat models (mimo-v2.5, deepseek-v4.1-flash) keep
+        native image routing. Matches the DeepInfra ``default_vision_model()``
+        hook pattern. Switched from deepseek-v4-flash-vision-exp on
+        2026-09-10 (V4.1 absorbed the retired vision-exp model), then from the
+        relay's old ``deepseek-flash`` alias on 2026-09-12, when models.dev
+        renamed the entry to ``deepseek-v4.1-flash`` — the old id's removal
+        made Hermes miss the catalog and fall back to a 128k hardcoded window.
+        """
+        return "deepseek-v4.1-flash"
+
     def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
         """Go subscription windows for /usage via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
 
