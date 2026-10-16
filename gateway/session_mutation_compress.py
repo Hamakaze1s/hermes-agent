@@ -75,7 +75,9 @@ async def prepare_compress(authority, live, payload, prepared):
     cached_agent = getattr(authority.runner, '_cached_agent_for', None)
     resident = cached_agent(live.route) if callable(cached_agent) else None
     # ``head`` is the portion being summarized — the whole history for a full run, the prefix for a
-    # partial one — so the count reports the work being done rather than main's whole-history count.
+    # partial one — so both the count and the guard follow the summarized portion: a long session
+    # whose ``here N`` leaves a short head stays silent while the summarizer runs, where main's
+    # guard read the whole history.
     announced = len(head) >= _VIEWER_COMPACT_MIN_MESSAGES
     if announced:
         _publish_compaction_status(live, snapshot, 'compacting',
@@ -99,10 +101,13 @@ async def prepare_compress(authority, live, payload, prepared):
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
     # Pessimistic until the summarizer answers, so anything that escapes it (a raise, an interrupt)
     # retires the status without claiming a completion that did not happen.
-    # The frame goes out from prepare, one durable write ahead of the commit
-    # (``session_mutations``): a commit that then fails leaves viewers on this terminal status while
-    # the requester still gets the error. Threading the announce back to the caller would close a
-    # few-millisecond window at the cost of splitting the guard across two modules.
+    # The frame still leaves prepare, one durable write ahead of the commit (``session_mutations``):
+    # activity during the summarization — another viewer's rename, a model switch, a turn admitted
+    # meanwhile — bumps the revision or generation the commit re-validates, so the commit can refuse
+    # (``revision_conflict``/``stale_generation``) after viewers were told the summary completed; the
+    # requester's error and the unchanged transcript are the authority in that case. Publishing the
+    # terminal frame after the commit needs the announce decision to travel back to the caller, which
+    # would put the guard in two modules for a viewer hint.
     terminal = _FAILED_STATUS
     try:
         compressed, compressor = await asyncio.to_thread(summarize)

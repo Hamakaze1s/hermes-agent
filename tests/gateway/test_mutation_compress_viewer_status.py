@@ -98,17 +98,17 @@ def test_preview_publishes_nothing(monkeypatch):
 
 
 def test_failed_summary_retires_without_claiming_success(monkeypatch):
-    """A raise must retire the status, and must not tell other viewers the compression completed."""
+    """A raise must retire the status with the failure wording, not a success or a no-change one."""
     frames, run = _lane(monkeypatch, _history(6))
     with pytest.raises(RuntimeError, match='summary provider down'):
         run(error=RuntimeError('summary provider down'))
     published = _published(frames)
     assert [entry[1] for entry in published] == ['compacting', 'compacted']
-    assert published[1][2] and '✓' not in published[1][2]
+    assert '✓' not in published[1][2] and 'did not complete' in published[1][2]
 
 
 def test_a_compress_that_removes_nothing_retires_without_claiming_success(monkeypatch):
-    """The summarizer's no-op (nothing carries a summary marker) is reported as such, not as success."""
+    """The summarizer's no-op is reported as such: not a success, and not the failure wording either."""
     messages = _history(6)
     frames, run = _lane(monkeypatch, messages)
     result = run(compressed=messages)
@@ -116,7 +116,7 @@ def test_a_compress_that_removes_nothing_retires_without_claiming_success(monkey
     published = _published(frames)
     assert result['status'] == 'noop'
     assert [entry[1] for entry in published] == ['compacting', 'compacted']
-    assert published[1][2] and '✓' not in published[1][2]
+    assert '✓' not in published[1][2] and 'no changes' in published[1][2]
 
 
 def test_the_four_message_boundary_is_inside_the_guard(monkeypatch):
