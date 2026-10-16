@@ -7,6 +7,7 @@ owner — so a viewer's status bar sat on "ready" for the whole summarization. R
 unified-gateway cutover (#106742, tracking #134889).
 """
 import asyncio
+import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -23,11 +24,15 @@ class _Compressor:
 
     result = None
     error = None
+    gate: threading.Event | None = None
 
     def __init__(self, *args, **kwargs):
         pass
 
     def compress(self, messages, **kwargs):
+        gate = type(self).gate
+        if gate is not None:
+            gate.wait(5)
         if type(self).error is not None:
             raise type(self).error
         return type(self).result
@@ -54,9 +59,27 @@ def _lane(monkeypatch, messages):
     prepared = {'snapshot': {'receipt': {'policy': {}, 'session_id': LOGICAL_ID},
                              'target': PHYSICAL_ID, 'target_revision': 1}}
 
-    def run(payload=None, compressed=None, error=None):
+    def run(payload=None, compressed=None, error=None, cancel=False):
         _Compressor.result, _Compressor.error = compressed, error
-        return asyncio.run(prepare_compress(authority, live, payload or {'focus': ''}, prepared))
+        call = payload or {'focus': ''}
+        if not cancel:
+            return asyncio.run(prepare_compress(authority, live, call, prepared))
+        # A real cancellation: the summarizer is parked on the gate, so the task is provably
+        # suspended at its await when it is cancelled.
+        gate = threading.Event()
+        _Compressor.gate = gate
+
+        async def drive():
+            task = asyncio.create_task(prepare_compress(authority, live, call, prepared))
+            await asyncio.sleep(0)
+            task.cancel()
+            gate.set()
+            return await task
+
+        try:
+            return asyncio.run(drive())
+        finally:
+            _Compressor.gate = None
 
     return frames, run
 
@@ -107,11 +130,15 @@ def test_failed_summary_retires_without_claiming_success(monkeypatch):
     assert '✓' not in published[1][2] and 'did not complete' in published[1][2]
 
 
-def test_an_interrupted_summary_retires_with_the_failure_wording(monkeypatch):
-    """A BaseException (client disconnect, retirement) must not leave a success line behind."""
+def test_a_cancelled_compress_retires_with_the_failure_wording(monkeypatch):
+    """Cancelling the owner task (loop teardown) must not leave a success line behind.
+
+    A cancellation is not an ``Exception``: it arrives as ``CancelledError`` at the summarizer await,
+    so only a retirement that survives a ``BaseException`` retires the status honestly.
+    """
     frames, run = _lane(monkeypatch, _history(6))
-    with pytest.raises(KeyboardInterrupt):
-        run(error=KeyboardInterrupt())
+    with pytest.raises(asyncio.CancelledError):
+        run(compressed=[{'_compressed_summary': 'sum'}], cancel=True)
     published = _published(frames)
     assert [entry[1] for entry in published] == ['compacting', 'compacted']
     assert '✓' not in published[1][2] and 'did not complete' in published[1][2]
