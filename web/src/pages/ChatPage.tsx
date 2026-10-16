@@ -835,6 +835,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         typeof navigator !== "undefined" &&
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
       mobileInputCleanup = bindPtyCompositionBridge(textarea, compositionForwarder, {
+        isMobileInput: () => isMobileLike,
         armReplacementWindow: () => {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         },

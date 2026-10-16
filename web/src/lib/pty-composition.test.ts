@@ -235,6 +235,61 @@ describe("bindPtyCompositionBridge", () => {
     expect(armReplacementWindow).not.toHaveBeenCalled();
   });
 
+  it("stands down when the mirror shrank below the commit", () => {
+    const { textarea } = bridge();
+    textarea.value = "B1（）";
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+    // Blur (and Enter/Ctrl-C) clears the mirror while a composition is open.
+    textarea.value = "";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "语调奇怪" }));
+
+    // xterm slices "" and the forwarder's fallback delivers the word once;
+    // rewriting here would make xterm send a fragment as well.
+    expect(textarea.value).toBe("");
+  });
+
+  it("stands down when the composition replaced text already in the mirror", () => {
+    const { textarea } = bridge();
+    textarea.value = "hello";
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+    // A recomposition (Gboard backspacing into a word) shrinks the mirror.
+    textarea.value = "help";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "help" }));
+
+    expect(textarea.value).toBe("help");
+  });
+
+  it("does not rewrite a compositionend that had no compositionstart", () => {
+    const { textarea } = bridge();
+    textarea.value = "B1（）";
+
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "语调奇怪" }));
+
+    expect(textarea.value).toBe("B1（）");
+  });
+
+  it("leaves a mobile-like surface to the replacement path", () => {
+    const textarea = document.createElement("textarea");
+    const armReplacementWindow = vi.fn();
+    bindPtyCompositionBridge(
+      textarea,
+      createPtyCompositionForwarder(() => undefined),
+      {
+        armReplacementWindow,
+        isReplacementInput: () => false,
+        isMobileInput: () => true,
+      },
+    );
+    textarea.value = "B1（）";
+
+    expect(compose(textarea, "B1（语调奇怪）", "语调奇怪")).toBe("调奇怪）");
+    expect(textarea.value).toBe("B1（语调奇怪）");
+    // Standing down must not take the replacement window with it.
+    expect(armReplacementWindow).toHaveBeenCalledTimes(1);
+  });
+
   it("arms the replacement window and hands commits to the forwarder", () => {
     vi.useFakeTimers();
     try {

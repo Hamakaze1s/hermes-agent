@@ -982,6 +982,88 @@ describe("ChatPage IME composition commit", () => {
     expect(textarea.value).toBe("é");
     expect(sentFrames(socket)).toEqual(["é"]);
   });
+
+  // Composition ranges that replace or shrink text the mirror already holds.
+  // Models the browser's composition range: an update replaces the range
+  // [from, to) with `text` and leaves the caret after it.
+  function replaceRange(textarea: HTMLTextAreaElement, from: number, to: number, text: string) {
+    const v = textarea.value;
+    textarea.value = v.slice(0, from) + text + v.slice(to);
+    textarea.setSelectionRange(from + text.length, from + text.length);
+    return { from, to: from + text.length };
+  }
+
+  it("Korean mid-line: the next syllable starts before xterm's finalize", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      let r = replaceRange(textarea, 3, 3, "ㅇ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ㅇ" }));
+      r = replaceRange(textarea, r.from, r.to, "안");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "안" }));
+      // Typing ㄴ commits 안 and opens the next composition in the same task.
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "안" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const caret = textarea.selectionStart;
+      r = replaceRange(textarea, caret, caret, "ㄴ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ㄴ" }));
+      await vi.advanceTimersByTimeAsync(0);
+      replaceRange(textarea, r.from, r.to, "녕");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "녕" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "녕" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(sentFrames(socket)).toEqual(["안", "녕"]);
+  });
+
+  it("Japanese henkan mid-line replaces a longer reading", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "B1（）";
+    textarea.setSelectionRange(3, 3);
+
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const r = replaceRange(textarea, 3, 3, "かんじ");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "かんじ" }));
+      await vi.advanceTimersByTimeAsync(0);
+      replaceRange(textarea, r.from, r.to, "漢字");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "漢字" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "漢字" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(sentFrames(socket)).toEqual(["漢字"]);
+  });
+
+  it("Gboard-style recomposition keeps the mirror and delivers the word once", async () => {
+    const { socket, textarea } = await renderOpenChat();
+    textarea.value = "hello";
+    textarea.setSelectionRange(5, 5);
+
+    await act(async () => {
+      // Backspacing into a committed word: Gboard reopens composition over it.
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      const r = replaceRange(textarea, 0, 5, "hell");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "hell" }));
+      replaceRange(textarea, r.from, r.to, "help");
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "help" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "help" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    // The commit reaches the PTY exactly once, with no slice of the mirror the
+    // user never typed: the bridge stands down on the short slice and the
+    // forwarder's fallback delivers "help".
+    expect(sentFrames(socket)).toEqual(["help"]);
+    expect(textarea.value).toBe("help");
+  });
 });
 
 // xterm WebGL renderer gating (#18773 / #45520 / #58685): the addon must only
