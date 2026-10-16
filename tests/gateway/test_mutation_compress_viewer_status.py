@@ -1,0 +1,114 @@
+"""A manual /compress on the canonical path shows its viewers that it is working.
+
+Main's in-process /compress pinned the pair itself (``tui_gateway/methods_session.py::
+_compress_live``: ``compressing`` → ``ready``); the canonical ``session.mutate(compress)`` published
+nothing, and the in-process path is unreachable once the Ink TUI/dashboard attach to the shared
+owner — so a viewer's status bar sat on "ready" for the whole summarization. Regression for the
+unified-gateway cutover (#106742, tracking #134889).
+"""
+import asyncio
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+import pytest
+
+from gateway.session_authority import LiveSession
+
+LOGICAL_ID = 'local-logical'
+PHYSICAL_ID = 'physical-child'
+
+
+class _Compressor:
+    """The summarizer's LLM call is the one thing a test cannot make; everything else runs for real."""
+
+    result = None
+    error = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def compress(self, messages, **kwargs):
+        if type(self).error is not None:
+            raise type(self).error
+        return type(self).result
+
+
+def _history(count):
+    return [{'role': 'user' if index % 2 == 0 else 'assistant', 'content': f'm{index}'}
+            for index in range(count)]
+
+
+def _lane(monkeypatch, messages):
+    """``(frames, run)``: a real prepare_compress over a real session event stream."""
+    from gateway.session_mutation_compress import prepare_compress
+    monkeypatch.setattr('gateway.session_policy.restore_policy',
+                        lambda receipt: SimpleNamespace(config=lambda authority: {}))
+    monkeypatch.setattr('gateway.session_policy.policy_scope', lambda policy, **kwargs: nullcontext())
+    monkeypatch.setattr('agent.context_compressor.ContextCompressor', _Compressor)
+    live = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    authority = SimpleNamespace(
+        db=SimpleNamespace(get_messages_as_conversation=lambda target: messages),
+        runner=SimpleNamespace(_resolve_session_agent_runtime=lambda **kwargs: ('model-x', {})))
+    prepared = {'snapshot': {'receipt': {'policy': {}, 'session_id': LOGICAL_ID},
+                             'target': PHYSICAL_ID, 'target_revision': 1}}
+
+    def run(payload=None, compressed=None, error=None):
+        _Compressor.result, _Compressor.error = compressed, error
+        return asyncio.run(prepare_compress(authority, live, payload or {'focus': ''}, prepared))
+
+    return frames, run
+
+
+def _published(frames):
+    return [(frame['params']['type'], frame['params']['payload']['kind'], frame['params']['payload']['text'])
+            for frame in frames]
+
+
+def test_manual_compress_publishes_the_viewer_lifecycle(monkeypatch):
+    messages = _history(6)
+    frames, run = _lane(monkeypatch, messages)
+    result = run(compressed=[{'_compressed_summary': 'sum'}, *messages[4:]])
+
+    published = _published(frames)
+    assert [entry[:2] for entry in published] == [('status.update', 'compacting'),
+                                                  ('status.update', 'compacted')]
+    assert published[0][2].startswith('⠋ compressing 6 messages (~') and published[0][2].endswith('…')
+    assert published[1][2] == '✓ Context compression complete'
+    assert result['summary']['headline']
+    # The viewer's own (logical) id: a non-in-place rotation moves the transcript, not the viewer,
+    # and the clients drop a frame whose session_id is not the session they are showing.
+    assert {frame['params']['session_id'] for frame in frames} == {LOGICAL_ID}
+
+
+def test_short_session_compress_stays_silent(monkeypatch):
+    """Main pinned only from four messages up; a short session must not flash a status."""
+    frames, run = _lane(monkeypatch, _history(3))
+    run(compressed=[{'_compressed_summary': 'sum'}])
+    assert frames == []
+
+
+def test_preview_publishes_nothing(monkeypatch):
+    """``--preview`` is a read-only report: no summarization, so nothing to report in flight."""
+    frames, run = _lane(monkeypatch, _history(6))
+    result = run(payload={'focus': '--preview'})
+    assert result['status'] == 'preview'
+    assert frames == []
+
+
+def test_failed_summary_still_retires_the_compacting_status(monkeypatch):
+    """A raise must not leave a viewer showing "compacting" for the rest of the session."""
+    frames, run = _lane(monkeypatch, _history(6))
+    with pytest.raises(RuntimeError, match='summary provider down'):
+        run(error=RuntimeError('summary provider down'))
+    assert [entry[1] for entry in _published(frames)] == ['compacting', 'compacted']
+
+
+def test_the_viewer_contract_is_pinned_by_the_publication(monkeypatch):
+    """Mutation control: with the publication disabled (the pre-fix behaviour) the frames vanish."""
+    from gateway import session_mutation_compress as compress
+    monkeypatch.setattr(compress, '_publish_compaction_status', lambda *args, **kwargs: None)
+    frames, run = _lane(monkeypatch, _history(6))
+    run(compressed=[{'_compressed_summary': 'sum'}])
+    assert frames == []
