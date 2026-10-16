@@ -679,8 +679,17 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Skill dir by frontmatter ``name`` (flat or nested)."""
     from agent.skill_utils import iter_skill_index_files
     base = _skills_dir()
-    return _match_skill_dir((p for p in iter_skill_index_files(base, "SKILL.md") if not is_external_skill_path(p)),
-                            skill_name) if base.exists() else None
+    if not base.exists():
+        return None
+    found = _match_skill_dir((p for p in iter_skill_index_files(base, "SKILL.md") if not is_external_skill_path(p)),
+                             skill_name)
+    if found is not None:
+        return found
+    # Local patch (archive fallback): a skill loaded out of skills/.archive/ still counts as
+    # used, otherwise an archived skill could never earn its way back into the index.
+    from agent.skill_utils import find_archived_skill
+    archived_md = find_archived_skill(skill_name, root=base)
+    return archived_md.parent if archived_md is not None else None
 
 
 def _find_external_skill_dir(skill_name: str) -> Optional[Path]:

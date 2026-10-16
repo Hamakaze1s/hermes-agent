@@ -51,6 +51,30 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     )
 
 
+ARCHIVE_DIRNAME = ".archive"
+
+
+def find_archived_skill(name: str, *, root: Optional[Path] = None) -> Optional[Path]:
+    """``SKILL.md`` for *name* under ``<root>/.archive/<name>/`` — the ONE deliberate exception
+    to the archive's exclusion from every scan.
+
+    Archiving hides a skill from the prompt index; it must not make the skill unloadable, or
+    every reference to it breaks silently. Resolution callers use this as a fallback when the
+    live tree has no match. Only a direct child of ``.archive`` is considered —
+    ``.archive/skill-backups/...`` holds historical copies whose names collide with live skills.
+    *name* also accepts the ``category/name`` relative form; the category is dropped because
+    archiving flattens the path.
+    """
+    bare = name.replace("\\", "/")
+    parts = bare.split("/")
+    if len(parts) > 2 or any(p in ("", ".", "..") for p in parts):
+        return None
+    bare = parts[-1]
+    base = Path(root) if root is not None else get_skills_dir()
+    candidate = base / ARCHIVE_DIRNAME / bare / "SKILL.md"
+    return candidate if candidate.is_file() else None
+
+
 _yaml_load_fn = None
 
 

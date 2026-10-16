@@ -538,10 +538,33 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
+        # Local patch (archive fallback): the curator moves unused skills into
+        # skills/.archive/, which every scan skips — including this resolution path, so a
+        # reference to an archived skill used to break silently. Archiving hides a skill from
+        # the prompt index, nothing more; an explicit by-name lookup still resolves.
+        archived_md = _locate_archived_skill(name, local_category_name, roots)
+        if archived_md is not None:
+            logger.warning("Skill '%s' resolved from the archive (%s) — archived skills are hidden "
+                           "from the skill index but stay loadable by name.", name, archived_md)
+            return None, archived_md.parent, archived_md
         available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
+
+
+def _locate_archived_skill(name: str, local_category_name: Optional[str], roots) -> Optional[Path]:
+    """``SKILL.md`` from the local ``skills/.archive/`` for *name*, else None (see
+    ``agent.skill_utils.find_archived_skill``). Local tier only: archived copies live under the
+    profile's skills dir, never under project/external roots."""
+    from agent.skill_utils import TIER_LOCAL, find_archived_skill
+    for tier, root in roots:
+        if tier != TIER_LOCAL:
+            continue
+        for candidate in (local_category_name or name, name):
+            if candidate and (md := find_archived_skill(candidate, root=root)) is not None:
+                return md
+    return None
 
 
 def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:

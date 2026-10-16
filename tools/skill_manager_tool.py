@@ -290,6 +290,13 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
             "Skill display name '%s' is ambiguous (%d skills claim it: %s) — refusing to guess; "
             "resolve it by directory name instead",
             name, len(display_matches), "; ".join(str(p) for p in display_matches))
+    # Local patch (archive fallback): resolve the name of an archived skill (skills/.archive/)
+    # so references to it keep working; see tools/skills_tool._locate_archived_skill.
+    from agent.skill_utils import find_archived_skill
+    for skills_dir in get_all_skills_dirs():
+        if (archived_md := find_archived_skill(name, root=skills_dir)) is not None:
+            logger.warning("Skill '%s' resolved from the archive (%s).", name, archived_md)
+            return {"path": archived_md.parent}
     return None
 
 
