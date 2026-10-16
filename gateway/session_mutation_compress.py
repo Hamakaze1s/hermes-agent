@@ -10,9 +10,13 @@ from hermes_state_runtime import RuntimeStoreError
 # ``tui_gateway/methods_session.py::_compress_live`` — and that path is unreachable now that the Ink
 # TUI attaches to the shared owner). Publish the pair the auto-compaction flow already uses, which
 # both Ink (``createGatewayEventHandler``) and Desktop match, under the short-session guard and the
-# wording main used.
+# wording main used. The terminal frame keeps kind ``compacted`` whatever the outcome — Ink clears
+# its compacting state on that kind alone (``status``/``ready`` would leave the ticker frozen) — so
+# its text carries the outcome instead of main's bare ``ready``.
 _VIEWER_COMPACT_MIN_MESSAGES = 4
 _COMPACTED_STATUS = "✓ Context compression complete"
+_NO_CHANGES_STATUS = "Context compression: no changes"
+_FAILED_STATUS = "Context compression did not complete"
 
 
 def compress_request(payload):
@@ -70,6 +74,8 @@ async def prepare_compress(authority, live, payload, prepared):
     # (cold session, or a managed worker that runs out of process) means no provider to call.
     cached_agent = getattr(authority.runner, '_cached_agent_for', None)
     resident = cached_agent(live.route) if callable(cached_agent) else None
+    # ``head`` is the portion being summarized — the whole history for a full run, the prefix for a
+    # partial one — so the count reports the work being done rather than main's whole-history count.
     announced = len(head) >= _VIEWER_COMPACT_MIN_MESSAGES
     if announced:
         _publish_compaction_status(live, snapshot, 'compacting',
@@ -91,12 +97,20 @@ async def prepare_compress(authority, live, payload, prepared):
             if not any(m.get('_compressed_summary') for m in compressed):
                 return None, compressor
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
+    # Pessimistic until the summarizer answers, so anything that escapes it (a raise, an interrupt)
+    # retires the status without claiming a completion that did not happen.
+    # The frame goes out from prepare, one durable write ahead of the commit
+    # (``session_mutations``): a commit that then fails leaves viewers on this terminal status while
+    # the requester still gets the error. Threading the announce back to the caller would close a
+    # few-millisecond window at the cost of splitting the guard across two modules.
+    terminal = _FAILED_STATUS
     try:
         compressed, compressor = await asyncio.to_thread(summarize)
+        terminal = _NO_CHANGES_STATUS if compressed is None else _COMPACTED_STATUS
     finally:
         # Retired on success, no-op and raise alike: a viewer must never be left showing "compacting".
         if announced:
-            _publish_compaction_status(live, snapshot, 'compacted', _COMPACTED_STATUS)
+            _publish_compaction_status(live, snapshot, 'compacted', terminal)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:

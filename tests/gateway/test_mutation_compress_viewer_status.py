@@ -97,18 +97,30 @@ def test_preview_publishes_nothing(monkeypatch):
     assert frames == []
 
 
-def test_failed_summary_still_retires_the_compacting_status(monkeypatch):
-    """A raise must not leave a viewer showing "compacting" for the rest of the session."""
+def test_failed_summary_retires_without_claiming_success(monkeypatch):
+    """A raise must retire the status, and must not tell other viewers the compression completed."""
     frames, run = _lane(monkeypatch, _history(6))
     with pytest.raises(RuntimeError, match='summary provider down'):
         run(error=RuntimeError('summary provider down'))
+    published = _published(frames)
+    assert [entry[1] for entry in published] == ['compacting', 'compacted']
+    assert published[1][2] and '✓' not in published[1][2]
+
+
+def test_a_compress_that_removes_nothing_retires_without_claiming_success(monkeypatch):
+    """The summarizer's no-op (nothing carries a summary marker) is reported as such, not as success."""
+    messages = _history(6)
+    frames, run = _lane(monkeypatch, messages)
+    result = run(compressed=messages)
+
+    published = _published(frames)
+    assert result['status'] == 'noop'
+    assert [entry[1] for entry in published] == ['compacting', 'compacted']
+    assert published[1][2] and '✓' not in published[1][2]
+
+
+def test_the_four_message_boundary_is_inside_the_guard(monkeypatch):
+    """Main pinned from four messages up: the boundary itself announces (see the silence test for three)."""
+    frames, run = _lane(monkeypatch, _history(4))
+    run(compressed=[{'_compressed_summary': 'sum'}, *_history(4)[-2:]])
     assert [entry[1] for entry in _published(frames)] == ['compacting', 'compacted']
-
-
-def test_the_viewer_contract_is_pinned_by_the_publication(monkeypatch):
-    """Mutation control: with the publication disabled (the pre-fix behaviour) the frames vanish."""
-    from gateway import session_mutation_compress as compress
-    monkeypatch.setattr(compress, '_publish_compaction_status', lambda *args, **kwargs: None)
-    frames, run = _lane(monkeypatch, _history(6))
-    run(compressed=[{'_compressed_summary': 'sum'}])
-    assert frames == []
