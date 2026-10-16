@@ -102,12 +102,11 @@ async def prepare_compress(authority, live, payload, prepared):
     # Pessimistic until the summarizer answers, so anything that escapes it (a raise, an interrupt)
     # retires the status without claiming a completion that did not happen.
     # The frame still leaves prepare, one durable write ahead of the commit (``session_mutations``):
-    # activity during the summarization — another viewer's rename, a model switch, a turn admitted
-    # meanwhile — bumps the revision or generation the commit re-validates, so the commit can refuse
-    # (``revision_conflict``/``stale_generation``) after viewers were told the summary completed; the
-    # requester's error and the unchanged transcript are the authority in that case. Publishing the
-    # terminal frame after the commit needs the announce decision to travel back to the caller, which
-    # would put the guard in two modules for a viewer hint.
+    # another viewer's metadata edit or a model switch during the summarization bumps the revision
+    # that commit re-validates, so it can refuse (``revision_conflict``) after viewers have been told
+    # the summary completed; the requester's error and the unchanged transcript are the authority
+    # then. Publishing after the commit would move the terminal publication into
+    # ``session_mutations``, so the lifecycle stays in one module and takes that window.
     terminal = _FAILED_STATUS
     try:
         compressed, compressor = await asyncio.to_thread(summarize)

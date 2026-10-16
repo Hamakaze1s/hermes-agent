@@ -107,6 +107,16 @@ def test_failed_summary_retires_without_claiming_success(monkeypatch):
     assert '✓' not in published[1][2] and 'did not complete' in published[1][2]
 
 
+def test_an_interrupted_summary_retires_with_the_failure_wording(monkeypatch):
+    """A BaseException (client disconnect, retirement) must not leave a success line behind."""
+    frames, run = _lane(monkeypatch, _history(6))
+    with pytest.raises(KeyboardInterrupt):
+        run(error=KeyboardInterrupt())
+    published = _published(frames)
+    assert [entry[1] for entry in published] == ['compacting', 'compacted']
+    assert '✓' not in published[1][2] and 'did not complete' in published[1][2]
+
+
 def test_a_compress_that_removes_nothing_retires_without_claiming_success(monkeypatch):
     """The summarizer's no-op is reported as such: not a success, and not the failure wording either."""
     messages = _history(6)
