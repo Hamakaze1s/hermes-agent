@@ -43,6 +43,35 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+# The Go relay answers two unrelated conditions with the SAME envelope — HTTP 403, ``type``
+# (and often ``code``) = ``server_error``, message wrapped in "Upstream request failed: ":
+#
+#   * its own upstream returned a body it could not parse
+#     ("[server_error] Upstream response was not valid JSON") — a blip, the credential is fine;
+#   * the account has no Go subscription
+#     ("An active OpenCode Go subscription is required to use Go models.") — this credential
+#     cannot serve Go traffic at all, so the pool must bench it and rotate to one that can.
+#
+# Only the message text tells them apart. Core's 403 default reads both as ``auth`` (which the
+# pool turns into a bench + rotate — right for the entitlement, wrong for the blip), and a check
+# keyed on ``code == "server_error"`` alone reads both as transient (wrong for the entitlement).
+# Classifying the entitlement in the profile hook settles it: ``_profile_verdict`` runs before
+# the status handler, so this branch wins whatever core later does with the relay's code.
+# ``billing`` (not ``model_entitlement``, which benches the credential+model pair for a year and
+# clears only via ``hermes auth reset``; not a DEAD row, which drops a manual entry after 24h)
+# keeps the one-hour bench for both multi- and single-key pools and re-arms the per-turn revert
+# hook, so a renewed subscription is picked up again without manual intervention.
+_ENTITLEMENT_403_MARKER = "subscription is required"
+
+
+def _classify_go_entitlement_403(error, *, status_code=None, error_code=None, message="", body=None, model=None):
+    """An OpenCode Go account with no subscription: bench this key and rotate (403)."""
+    if status_code == 403 and _ENTITLEMENT_403_MARKER in str(message or "").lower():
+        return {"reason": "billing", "retryable": False,
+                "should_rotate_credential": True, "should_fallback": True}
+    return None
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -142,6 +171,8 @@ opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # Two relay 403s share one envelope; this hook claims the entitlement one only (#117869).
+    classify_api_error=_classify_go_entitlement_403,
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),
