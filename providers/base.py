@@ -97,6 +97,14 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # Per-model exception to ``supports_vision_tool_messages``: model ids whose
+    # backends accept list-type tool content with image parts even though the
+    # provider as a whole does not. Exact ids only, membership-checked; anything
+    # absent keeps the provider-wide veto (fail-closed). Kept out of
+    # ``model_capabilities`` on purpose — a non-empty capabilities entry there
+    # changes catalog/context-length resolution for the id.
+    vision_tool_message_models: frozenset = frozenset()
+
     # True only when this provider's Chat Completions endpoint explicitly
     # documents ``prompt_cache_key`` as an accepted request body field.  This
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown

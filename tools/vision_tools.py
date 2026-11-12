@@ -608,9 +608,12 @@ def _build_native_vision_tool_result(
         "content": [
             {"type": "text", "text": text_part},
             {"type": "image_url", "image_url": {"url": image_data_url}}],
+        # Also shown in tool previews and persisted in the session transcript, so it must
+        # read correctly whether or not the image was delivered — never claim sight, never
+        # deny a delivery that happened.
         "text_summary": (
-            f"Image attached natively for the main model ({image_size_bytes / 1024:.1f} KB). "
-            "Answer using built-in vision."),
+            f"Tool returned an image ({image_size_bytes / 1024:.1f} KB). "
+            "If no image is attached to this message, it was not delivered to you."),
         "meta": {"image_url": image_url[:200], "size_bytes": image_size_bytes, "native_vision": True}}
 
 

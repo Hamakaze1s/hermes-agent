@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
@@ -30,6 +31,41 @@ _DATA_URL_SUFFIXES = {
 
 def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+
+
+# The native-vision envelope tells the model to read the attached image with its own
+# eyes. After a downgrade strips the image bytes, keeping that sentence makes the model
+# describe a picture it can no longer see (#132837 follow-up). Any text salvaged out of a
+# stripped tool message is scrubbed of these claims and annotated with an honest marker.
+# Whole sentences, not fragments: removing only "you can see it natively now" leaves
+# "Image loaded into your context — . Use your built-in vision…", which still claims a
+# delivery that no longer exists. No marker may suggest calling vision_analyze again —
+# while the native fast path is open that would re-enter the same rejection.
+_NATIVE_VISION_CLAIM_PATTERNS = (
+    re.compile(r"Image loaded into your context\s*[—–-]?\s*you can see it natively now\."),
+    re.compile(r"Use your built-in vision to answer the user\."),
+)
+_IMAGE_OMITTED_MARKER = (
+    "[the image was removed from this tool result — it is not visible to you and no "
+    "description is available.]"
+)
+
+
+def _scrub_native_vision_claims(text: str) -> str:
+    """Drop "you can see it" sentences from salvaged tool text and mark the loss honestly.
+
+    Only the claim sentences are removed: the envelope's trailing ``Question:`` / ``Note:``
+    blocks keep their line structure and their own punctuation.
+    """
+    if not text:
+        return text
+    if not any(pattern.search(text) for pattern in _NATIVE_VISION_CLAIM_PATTERNS):
+        return text
+    for pattern in _NATIVE_VISION_CLAIM_PATTERNS:
+        text = pattern.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return "\n\n".join(part for part in (_IMAGE_OMITTED_MARKER, text) if part)
 
 
 def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
@@ -284,8 +320,12 @@ class VisionMessagePrepMixin:
             if not self._content_has_image_parts(content):
                 continue
 
-            # Salvage any text parts so the model still sees some signal.
-            msg["content"] = "\n\n".join(_salvage_text_parts(content, any_dict_text=False)) or (
+            # Salvage any text parts so the model still sees some signal — scrubbed of the
+            # native envelope's "you can see it" claim, which is false once the image is gone.
+            salvaged = _scrub_native_vision_claims(
+                "\n\n".join(_salvage_text_parts(content, any_dict_text=False))
+            )
+            msg["content"] = salvaged or (
                 "[image content removed — provider does not accept "
                 "list-type tool message content]"
             )

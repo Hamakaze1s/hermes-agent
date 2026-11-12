@@ -86,6 +86,67 @@ class TestStripImagePartsHelper:
         agent._try_strip_image_parts_from_tool_messages(msgs)
         assert ("xiaomi", "mimo-v2.5") in agent._no_list_tool_content_models
 
+    def test_native_envelope_strip_does_not_claim_the_model_can_see(self):
+        """A downgraded native envelope must never tell the model it can see the image.
+
+        The native envelope's text part is "Image loaded into your context — you can see it
+        natively now…"; keeping that sentence after the bytes are stripped makes the model
+        describe a picture it never received (silent blindness), which is worse than an
+        honest error.
+        """
+        agent = _make_agent(provider="opencode-go", model="deepseek-v4.1-flash")
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "text", "text": "Image loaded into your context — you can see it natively "
+                                         "now. Use your built-in vision to answer the user."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,X"}},
+            ]},
+        ]
+        assert agent._try_strip_image_parts_from_tool_messages(msgs) is True
+        text = msgs[0]["content"]
+        assert isinstance(text, str)
+        # No surviving sentence may imply the image arrived…
+        assert "you can see it natively now" not in text
+        assert "loaded into your context" not in text
+        assert "built-in vision" not in text
+        # …and removing a sentence must not leave a stray dash/period shell behind.
+        assert "— ." not in text
+        assert not text.rstrip().endswith("—")
+        assert "not visible to you" in text.lower()
+        assert "image_url" not in text
+
+    def test_native_envelope_keeps_question_and_note_intact(self):
+        """Only the claim sentences go: the trailing Question/Note blocks are content."""
+        agent = _make_agent(provider="opencode-go", model="deepseek-v4.1-flash")
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "text", "text": (
+                    "Image loaded into your context — you can see it natively now. "
+                    "Use your built-in vision to answer the user.\n\n"
+                    "Question: 这个表格里 B 的延迟是多少？\n\n"
+                    "Note: downscaled from 4000px."
+                )},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,X"}},
+            ]},
+        ]
+        agent._try_strip_image_parts_from_tool_messages(msgs)
+        text = msgs[0]["content"]
+        assert "Question: 这个表格里 B 的延迟是多少？" in text
+        assert "downscaled from 4000px." in text  # trailing period survives
+        assert "\n\nQuestion:" in text  # block structure survives
+        assert "you can see it" not in text
+
+    def test_non_native_tool_text_is_left_verbatim(self):
+        agent = _make_agent()
+        msgs = [
+            {"role": "tool", "tool_call_id": "x", "content": [
+                {"type": "text", "text": "screenshot ready"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,X"}},
+            ]},
+        ]
+        agent._try_strip_image_parts_from_tool_messages(msgs)
+        assert msgs[0]["content"] == "screenshot ready"
+
     def test_only_tool_messages_get_downgraded(self):
         """User / assistant messages with list-type content are out of
         scope — they're handled by the existing image-routing path."""

@@ -179,6 +179,13 @@ opencode_go = OpenCodeGoProfile(
     # and the rejected row stays in history so every later call dies too. Images in user
     # messages are fine, so vision itself keeps working via the text-summary downgrade.
     supports_vision_tool_messages=False,
+    # Exact ids whose backend accepts image parts inside a tool message even though
+    # this relay's provider-wide verdict is False: live-verified 2026-11-12 with
+    # 20/20 successful reads across 20 distinct `x-opencode-session` values
+    # (chat/completions), plus streaming, multi-image and a mid-chain tool loop.
+    # Other backends behind the same relay (MiMo/GLM) reject it, so every id needs
+    # its own positive evidence before being listed here. Re-probe before adding.
+    vision_tool_message_models=frozenset({"deepseek-v4.1-flash"}),
 )
 
 register_provider(opencode_zen)

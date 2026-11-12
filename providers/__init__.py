@@ -230,6 +230,27 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     return profile
 
 
+def _model_allows_vision_tool_messages(profile: Any, model: str) -> bool:
+    """Per-model lift of a profile-level tool-image veto.
+
+    A profile veto states what the *provider as a whole* rejects, which is often a
+    per-backend truth (a relay fronts backends with different validators).
+    ``vision_tool_message_models`` lists the exact ids with live-verified support;
+    membership lifts the veto, anything else keeps the provider-wide verdict
+    (fail-closed, including empty/unknown ids and non-string input).
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip()
+    if not name:
+        return False
+    listed = getattr(profile, "vision_tool_message_models", None) or ()
+    try:
+        return name in listed
+    except TypeError:  # a non-container declaration must not raise on the gate path
+        return False
+
+
 def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool:
     """Whether an active route or its aggregator-targeted model rejects image tool parts.
 
@@ -241,7 +262,11 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     """
     provider_name = str(provider or "").strip().lower()
     profile = get_provider_profile(provider_name)
-    if profile is not None and profile.supports_vision_tool_messages is False:
+    if (
+        profile is not None
+        and profile.supports_vision_tool_messages is False
+        and not _model_allows_vision_tool_messages(profile, model)
+    ):
         return True
     # Routing aggregators accept a ``vendor/model`` identifier while the request is sent
     # to the aggregator; the target provider can have stricter message-shape support than
@@ -254,6 +279,8 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     if not separator or not target_name:
         return False
     target_profile = get_provider_profile(target_name.strip().lower())
+    # No per-model lift on this leg: the exception is verified for the direct relay
+    # only, and an aggregator/alias prefix is an untested surface. Fail closed.
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
