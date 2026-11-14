@@ -393,7 +393,7 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-        sessions = []
+        resolved = []
         for sid in tuple(self.authority.sessions):
             candidate = SessionRef(self.actor.profile_id, sid)
             try:
@@ -402,21 +402,32 @@ class AuthorityConnection:
                 if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
                     raise
                 continue
-            row = self.authority.db.get_session(sid)
-            # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES or (
-                    not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
-                continue
+            resolved.append((sid, handle))
+
+        def _live_rows():
+            # One state.db read per live session (two for an idle one): off the loop, as the
+            # stored feed above. Each sqlite step drops and retakes the GIL, so under a CPU-bound
+            # thread (a hung plugin hook) this loop cost seconds and starved the liveness probe.
             from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
-            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
+            rows = []
+            for sid, handle in resolved:
+                row = self.authority.db.get_session(sid)
+                # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
+                # finite one-shot runs are not conversations, as on every other picker.
+                if row.get('source') in INTERNAL_LISTING_SOURCES or (
+                        not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
+                    continue
+                if closed_and_unviewed(self.authority, sid, handle):
+                    # Closed by its last viewer and idle: main lists it as resumable (the stored
+                    # feed), not as a live session.
+                    continue
+                rows.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': handle.execution_state == 'running'})
+            return rows
+
+        sessions = await asyncio.to_thread(_live_rows)
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
