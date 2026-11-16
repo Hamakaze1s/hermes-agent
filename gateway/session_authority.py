@@ -200,6 +200,11 @@ class SessionAuthority:
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
+        if row is None:
+            # The live entry outlives its row by a moment (a delete commits its transaction, then
+            # retires the live sessions); callers already skip not_found, so report it here
+            # instead of letting a TypeError out of row['runtime_revision'].
+            raise RuntimeStoreError('not_found')
         pending = self._pending_rows(ref)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')

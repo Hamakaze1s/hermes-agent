@@ -412,6 +412,11 @@ class AuthorityConnection:
             rows = []
             for sid, handle in resolved:
                 row = self.authority.db.get_session(sid)
+                if row is None:
+                    # Deleted between resolve and this worker-thread read (a delete commits its
+                    # transaction before it retires the live entry; prune has the same shape):
+                    # the stored feed owns the row now, so this is no longer a live session.
+                    continue
                 # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
                 # finite one-shot runs are not conversations, as on every other picker.
                 if row.get('source') in INTERNAL_LISTING_SOURCES or (
