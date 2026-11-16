@@ -103,7 +103,10 @@ async def test_unavailable_raw_route_is_quiet_without_hiding_invalid_routes(tmp_
     caplog.set_level(logging.WARNING, logger="gateway.run")
     for _ in range(3):
         assert await runner._deliver_async_delegation_group([evt]) is False
-    assert not caplog.records
+    # Observable but not noisy: one WARNING for this event, repeats stay at DEBUG.
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert "no api_server adapter for raw session" in caplog.records[0].getMessage()
+    caplog.clear()
     row = delegation.get_durable_delegation(evt["delegation_id"])
     assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
     assert await runner._inject_watch_notification("watch", {"type": "watch_match", "session_key": "agent:broken"}) is None
