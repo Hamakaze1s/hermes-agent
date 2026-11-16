@@ -299,6 +299,9 @@ def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_ur
         if png_url is not None:
             url, mime = png_url, None
     if mime is not None:
+        # Sibling text is not scrubbed here: the native vision envelope never reaches this
+        # branch — tools.vision_tools._prepare_image converts SVG/BMP/TIFF to PNG before encoding
+        # (tests/agent/test_vision_claim_scrub_paths.py locks that). The marker itself is explicit.
         return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
     image_part: dict[str, Any] = {"type": "input_image", "image_url": url}
     if _nonblank(detail):

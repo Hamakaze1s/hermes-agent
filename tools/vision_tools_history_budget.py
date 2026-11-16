@@ -168,13 +168,19 @@ def native_turn_images(user_message: Any) -> Iterator[None]:
 def native_turn_duplicate(image_url: str, region: Optional[list]) -> Optional[str]:
     """Text tool result when ``image_url`` already rides the active user turn natively, else
     ``None``. A native re-embed would put the identical pixels into the same request twice
-    (the Telegram case in #76411); a ``region`` crop still embeds because it returns new detail."""
+    (the Telegram case in #76411); a ``region`` crop still embeds because it returns new detail.
+
+    The message is conditional on purpose: a send path that strips images (an image-rejecting
+    route) never rewrites this tool row, so it must stay true whether or not the image survived.
+    The caller skips this short-circuit outright for a route with a recorded image rejection."""
     if region is not None or _image_key(image_url) not in _native_turn_images.get():
         return None
     return json.dumps({
         "success": True,
         "already_in_context": True,
         "message": (
-            "This image is already attached natively to the current user message — you can see it "
-            "now. Answer with your built-in vision; pass a `region` to zoom into part of it."),
+            "This image was attached to the current user message, so it was not loaded again. "
+            "If the image is visible in that message, answer from it; pass a `region` to zoom into "
+            "part of it. If no image is visible there, it did not reach you — say so instead of "
+            "describing it."),
     })

@@ -103,16 +103,20 @@ class TestToolResultContentProactiveDowngrade:
         assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
 
     def test_reactive_cache_still_works(self):
-        """In-session cache (_no_list_tool_content_models) still triggers."""
+        """In-session cache (_no_list_tool_content_models) still triggers — and, being a learned
+        rejection, the image is swapped for an aux description rather than dropped."""
         agent = _make_agent("openrouter", "some-model")
         agent._no_list_tool_content_models = {("openrouter", "some-model")}
         result = _multimodal_result(text="cached downgrade")
 
-        with patch.object(agent, "_model_supports_vision", return_value=True):
+        with patch.object(agent, "_model_supports_vision", return_value=True), \
+             patch.object(agent, "_describe_image_for_anthropic_fallback",
+                          return_value="[The tool result attached an image. Here's what it contains:\nA login form.]"):
             content = agent._tool_result_content_for_active_model("browser_screenshot", result)
 
         assert isinstance(content, str)
         assert "cached downgrade" in content
+        assert "A login form." in content
 
 # ---------------------------------------------------------------------------
 # ProviderProfile.supports_vision_tool_messages field

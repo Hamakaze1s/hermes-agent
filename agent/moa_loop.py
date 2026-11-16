@@ -25,6 +25,7 @@ from agent.message_content import flatten_message_text
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
+from agent.vision_claim_text import scrub_native_vision_claims
 
 logger = logging.getLogger(__name__)
 
@@ -789,8 +790,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered.append({"role": "assistant", "content": "\n".join(parts)})
         elif role == "tool":
             # Fold the tool result into the preceding assistant turn as text (a leading
-            # tool result with no assistant turn opens one).
-            block = f"[tool result: {_truncate_tool_result(text)}]"
+            # tool result with no assistant turn opens one). Flattening drops any image, so a
+            # native envelope's "you can see it" sentence must not reach the reference model.
+            block = f"[tool result: {_truncate_tool_result(scrub_native_vision_claims(text))}]"
             if rendered and rendered[-1].get("role") == "assistant":
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:

@@ -22,6 +22,7 @@ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.image_rejection_registry import note_rejection
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -291,6 +292,9 @@ def recover_before_classification(
             # Record the model; the retry re-enters build_api_request with the same
             # api_messages and strip_images_for_rejecting_model strips them there.
             _rejected.add(_model_key)
+            # Tools can't see this agent's set; the process-wide record (TTL'd) stops
+            # them handing this route a native image envelope the send path would strip.
+            note_rejection(*_model_key)
             _vlines(
                 agent,
                 "⚠️  Server rejected image content — sending text only to this model; "

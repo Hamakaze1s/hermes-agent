@@ -556,12 +556,37 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
-def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
+def _route_rejection_recorded(provider: str, model: str) -> bool:
+    """An unexpired ``agent.image_rejection_registry`` entry for this route; lookup failure → False."""
+    try:
+        from agent.image_rejection_registry import rejects_images
+        return rejects_images(provider, model)
+    except Exception:
+        return False
+
+
+def _accepts_tool_result_images(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, honor_rejections: bool = True,
+) -> bool:
     """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
     (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
     results are known to carry media or the per-model capability lookup (config override → catalog incl. the
-    profile's ``model_capabilities`` → local probes) attests the model as vision-capable."""
+    profile's ``model_capabilities`` → local probes) attests the model as vision-capable.
+
+    A route that rejected tool-result images in this process within the TTL
+    (``agent.image_rejection_registry``) is refused too: its send path strips the image, so a
+    native envelope would leave the model reading "you can see it" with nothing attached.
+    Callers then take the aux lane (image in a user message). An envelope that still reaches
+    the agent on such a route is swapped for an aux description there
+    (``VisionMessagePrepMixin._tool_result_content_for_active_model``). Without a working aux
+    vision backend neither lane can see the image, and the model is told so — never "you can
+    see it".
+
+    ``honor_rejections=False`` answers the static question (could this route ever take the native
+    lane?) — tool *visibility* uses it so a transient rejection never reshapes the tool list."""
     if _profile_rejects_tool_media(provider, model):
+        return False
+    if honor_rejections and _route_rejection_recorded(provider, model):
         return False
     if _supports_media_in_tool_results(provider, model):
         return True
@@ -569,24 +594,37 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[dict[st
     return _lookup_supports_vision(provider, model, cfg) is True
 
 
-def _native_tool_result_images(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
+def _native_tool_result_images(
+    provider: str, model: str, cfg: Optional[dict[str, Any]], *, honor_rejections: bool = True,
+) -> bool:
     """THE gate for every tool that can hand the main model pixels (``vision_analyze``, browser and
     ``computer_use`` screenshots, MCP ``ImageContent``): image routing resolves to ``native``
     (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, the catalog) AND the
     route accepts images inside tool results. One predicate, so the lane never depends on which
     tool produced the image."""
     from agent.image_routing import decide_image_input_mode
-    return decide_image_input_mode(provider, model, cfg) == "native" and _accepts_tool_result_images(provider, model, cfg)
+    return decide_image_input_mode(provider, model, cfg) == "native" and _accepts_tool_result_images(
+        provider, model, cfg, honor_rejections=honor_rejections)
 
 
-def _should_use_native_vision_fast_path() -> bool:
+def _should_use_native_vision_fast_path(*, honor_rejections: bool = True) -> bool:
     """:func:`_native_tool_result_images` for the active main model; any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
         from hermes_cli.config import load_config
-        return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config())
+        return _native_tool_result_images(
+            _read_main_provider(), _read_main_model(), load_config(), honor_rejections=honor_rejections)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
+        return False
+
+
+def _active_route_rejection_recorded() -> bool:
+    """:func:`_route_rejection_recorded` for the active main model; any failure → False."""
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        return _route_rejection_recorded(_read_main_provider(), _read_main_model())
+    except Exception:
         return False
 
 
@@ -701,7 +739,9 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
-    already_native = _native_turn_duplicate(image_url, region)
+    # A route with a recorded image rejection may have had the user turn's image stripped:
+    # don't answer "it's already attached" for an image the model may not have.
+    already_native = None if _active_route_rejection_recorded() else _native_turn_duplicate(image_url, region)
     if already_native is not None:
         return already_native
     # A cap > 0 RESERVES the slot here (atomic check-and-count); released below if no embed happens.
@@ -951,8 +991,31 @@ def check_vision_requirements() -> bool:
     path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
     provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
     ``video_analyze`` keeps the aux-only gate — its handler has no native path.
+
+    The native half ignores the transient ``agent.image_rejection_registry``: a recorded
+    rejection must not hide the tools (schema churn breaks the prompt cache, and the tools would
+    reappear when the entry expires). The handlers take the non-native path meanwhile, or say
+    plainly that no vision backend is available.
     """
-    return _should_use_native_vision_fast_path() or check_video_requirements()
+    return _should_use_native_vision_fast_path(honor_rejections=False) or check_video_requirements()
+
+
+def _native_lane_suspended_without_aux() -> bool:
+    """True when only a recorded rejection closes the native lane AND no aux vision client resolves —
+    the case where the tool stays listed (see :func:`check_vision_requirements`) but cannot work."""
+    if not _should_use_native_vision_fast_path(honor_rejections=False):
+        return False
+    try:
+        return not check_video_requirements()
+    except Exception:
+        return False  # let the aux path run and report its own error
+
+
+_NATIVE_LANE_SUSPENDED_ERROR = (
+    "Image analysis is temporarily unavailable: the active model's endpoint recently refused "
+    "images in tool results, and no auxiliary vision model is configured to describe the image "
+    "instead. The image was not loaded and is not visible to you — tell the user you can't view "
+    "it right now rather than guessing its contents.")
 
 
 from tools.registry import registry, tool_error
@@ -1020,6 +1083,8 @@ async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:
     if _should_use_native_vision_fast_path():
         logger.info("vision_analyze: native fast path")
         return await _vision_analyze_native(image_url, question, task_id=task_id, region=region)
+    if _native_lane_suspended_without_aux():
+        return tool_error(_NATIVE_LANE_SUSPENDED_ERROR, success=False)
 
     # Legacy path: aux LLM describes the image and we return its text.
     full_prompt = (

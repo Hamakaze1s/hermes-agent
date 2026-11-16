@@ -10,13 +10,15 @@ import copy
 import hashlib
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from agent.vision_claim_text import (
+    IMAGE_DESCRIBED_MARKER, IMAGE_OMITTED_MARKER, NATIVE_VISION_CLAIM_PATTERNS, scrub_native_vision_claims,
+)
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -33,39 +35,11 @@ def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
 
 
-# The native-vision envelope tells the model to read the attached image with its own
-# eyes. After a downgrade strips the image bytes, keeping that sentence makes the model
-# describe a picture it can no longer see (#132837 follow-up). Any text salvaged out of a
-# stripped tool message is scrubbed of these claims and annotated with an honest marker.
-# Whole sentences, not fragments: removing only "you can see it natively now" leaves
-# "Image loaded into your context — . Use your built-in vision…", which still claims a
-# delivery that no longer exists. No marker may suggest calling vision_analyze again —
-# while the native fast path is open that would re-enter the same rejection.
-_NATIVE_VISION_CLAIM_PATTERNS = (
-    re.compile(r"Image loaded into your context\s*[—–-]?\s*you can see it natively now\."),
-    re.compile(r"Use your built-in vision to answer the user\."),
-)
-_IMAGE_OMITTED_MARKER = (
-    "[the image was removed from this tool result — it is not visible to you and no "
-    "description is available.]"
-)
-
-
-def _scrub_native_vision_claims(text: str) -> str:
-    """Drop "you can see it" sentences from salvaged tool text and mark the loss honestly.
-
-    Only the claim sentences are removed: the envelope's trailing ``Question:`` / ``Note:``
-    blocks keep their line structure and their own punctuation.
-    """
-    if not text:
-        return text
-    if not any(pattern.search(text) for pattern in _NATIVE_VISION_CLAIM_PATTERNS):
-        return text
-    for pattern in _NATIVE_VISION_CLAIM_PATTERNS:
-        text = pattern.sub("", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return "\n\n".join(part for part in (_IMAGE_OMITTED_MARKER, text) if part)
+# Claim scrubbing is shared with every other image stripper (agent.vision_claim_text);
+# the private names stay as aliases for existing callers and tests.
+_NATIVE_VISION_CLAIM_PATTERNS = NATIVE_VISION_CLAIM_PATTERNS
+_IMAGE_OMITTED_MARKER = IMAGE_OMITTED_MARKER
+_scrub_native_vision_claims = scrub_native_vision_claims
 
 
 def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
@@ -91,6 +65,23 @@ def _provider_model_key(agent: Any) -> tuple[str, str]:
         (getattr(agent, "provider", "") or "").strip().lower(),
         (getattr(agent, "model", "") or "").strip(),
     )
+
+
+def _route_rejection_learned(agent: Any) -> bool:
+    """True once the active route refused tool-message images at runtime: this agent's
+    ``_image_rejecting_models`` / ``_no_list_tool_content_models``, or an unexpired
+    ``agent.image_rejection_registry`` entry (any agent in the process). Module-level for the
+    same MagicMock reason as :func:`_provider_model_key`."""
+    key = _provider_model_key(agent)
+    for attr in ("_image_rejecting_models", "_no_list_tool_content_models"):
+        learned = getattr(agent, attr, None)
+        if isinstance(learned, (set, frozenset)) and key in learned:
+            return True
+    try:
+        from agent.image_rejection_registry import rejects_images
+        return rejects_images(*key)
+    except Exception:
+        return False
 
 
 class VisionMessagePrepMixin:
@@ -180,7 +171,21 @@ class VisionMessagePrepMixin:
 
     def _provider_supports_vision_tool_messages(self) -> bool:
         """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
-        multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
+        multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``).
+
+        False as well once this route rejected image input — learned by this agent
+        (``_image_rejecting_models``) or by any agent in the process within the TTL
+        (``agent.image_rejection_registry``, which also records list-type tool content
+        rejections): the send path would strip the image anyway."""
+        key = _provider_model_key(self)
+        if key in (getattr(self, "_image_rejecting_models", None) or ()):
+            return False
+        try:
+            from agent.image_rejection_registry import rejects_images
+            if rejects_images(*key):
+                return False
+        except Exception:
+            pass
         try:
             from providers import routed_model_rejects_vision_tool_messages
             return not routed_model_rejects_vision_tool_messages(
@@ -191,21 +196,28 @@ class VisionMessagePrepMixin:
             pass
         return True  # default: assume compatible
 
+    def _image_notes(self, content: list, role: str) -> list[str]:
+        """One aux-vision description (cached per image) for each image part in ``content``."""
+        notes: list[str] = []
+        for part in filter(_is_image_part, content):
+            image_data = part.get("image_url", {})
+            image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
+            notes.append(
+                self._describe_image_for_anthropic_fallback(image_url, role) if image_url
+                else "[An image was attached but no image source was available.]"
+            )
+        return notes
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
 
-        image_notes: list[str] = []
-        for part in filter(_is_image_part, content):
-            image_data = part.get("image_url", {})
-            image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
-            image_notes.append(
-                self._describe_image_for_anthropic_fallback(image_url, role) if image_url
-                else "[An image was attached but no image source was available.]"
-            )
-        # Text parts and unknown dict types both contribute their ``text``.
-        prefix = "\n\n".join(note for note in image_notes if note).strip()
-        suffix = "\n".join(_salvage_text_parts(content, any_dict_text=True)).strip()
+        # Text parts and unknown dict types both contribute their ``text``. The image becomes a
+        # description, so a native envelope's "you can see it" sentence must not survive.
+        prefix = "\n\n".join(note for note in self._image_notes(content, role) if note).strip()
+        suffix = scrub_native_vision_claims(
+            "\n".join(_salvage_text_parts(content, any_dict_text=True)).strip(), IMAGE_DESCRIBED_MARKER,
+        )
         if prefix and suffix:
             return f"{prefix}\n\n{suffix}"
         return prefix or suffix or "[A multimodal message was converted to text for Anthropic compatibility.]"
@@ -240,6 +252,14 @@ class VisionMessagePrepMixin:
     # Same transform for the Anthropic route (callers/tests patch this name independently).
     _prepare_anthropic_messages_for_api = _prepare_messages_for_non_vision_model
 
+    def _describe_tool_result_images(self, result: dict) -> str:
+        """Text stand-in for a multimodal tool result whose images can't ride this route: an
+        aux-vision description per image (``_describe_image_for_anthropic_fallback``, cached),
+        then the result's own summary with any "you can see it" claim scrubbed."""
+        notes = VisionMessagePrepMixin._image_notes(self, result.get("content") or [], "tool")
+        summary = scrub_native_vision_claims(_multimodal_text_summary(result), IMAGE_DESCRIBED_MARKER)
+        return "\n\n".join(text for text in (*notes, summary) if text)
+
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Tool message content that is safe for the active model. Text-only providers must not receive
         image parts: a rejected tool result becomes canonical history and can break the next user turn."""
@@ -251,21 +271,25 @@ class VisionMessagePrepMixin:
             return content
 
         if self._model_supports_vision():
-            # Vision on paper, but the provider rejects list-type tool content (or we already learned that
-            # in-session): short-circuit to a text summary.
+            # A rejection learned at runtime (image input or list-type tool content refused; this
+            # agent's sets or the process registry): the tool side reads the same registry and
+            # normally takes the aux lane itself, but an envelope can still land here (rejection
+            # learned after the tool ran, registry lapsed while this agent's set did not). Swap
+            # its image for an aux description so the model keeps its vision.
+            key = _provider_model_key(self)
+            if _route_rejection_learned(self):
+                logger.debug(
+                    "Tool %s: %s/%s rejected tool-message images this session — sending an aux "
+                    "description instead", tool_name, key[0], key[1],
+                )
+                return VisionMessagePrepMixin._describe_tool_result_images(self, result)
+            # Static profile veto (supports_vision_tool_messages=False): the tool side never takes
+            # the native lane for such a route, so producers there emit text already.
             if not self._provider_supports_vision_tool_messages():
                 logger.debug(
                     "Tool %s: provider %s does not accept list-type tool "
                     "content — sending text summary",
                     tool_name, getattr(self, "provider", ""),
-                )
-                return _multimodal_text_summary(result)
-            key = _provider_model_key(self)
-            if key in (getattr(self, "_no_list_tool_content_models", None) or ()):
-                logger.debug(
-                    "Tool %s: model %s/%s known to reject list-type tool "
-                    "content this session — sending text summary",
-                    tool_name, key[0], key[1],
                 )
                 return _multimodal_text_summary(result)
             return content
@@ -310,6 +334,10 @@ class VisionMessagePrepMixin:
                 self._no_list_tool_content_models = set()
             if key[1]:  # only record when we actually have a model id
                 self._no_list_tool_content_models.add(key)
+                # Tools can't see this agent's set: without the shared record they keep
+                # producing native envelopes that every send then strips (no vision at all).
+                from agent.image_rejection_registry import note_rejection
+                note_rejection(*key)
 
         changed = False
         for msg in api_messages:

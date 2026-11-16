@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
+from agent.vision_claim_text import scrub_native_vision_claims_in_parts
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,9 @@ def _image_block_from_openai_url(url: str) -> dict[str, Any]:
     if unsupported == "image/svg+xml" and (png_url := rasterize_svg_data_url(url)) is not None:
         url, unsupported = png_url, None
     if unsupported is not None:
+        # Sibling text is not scrubbed here: the native vision envelope never reaches this
+        # branch — tools.vision_tools._prepare_image converts SVG/BMP/TIFF to PNG before encoding
+        # (tests/agent/test_vision_claim_scrub_paths.py locks that). The marker itself is explicit.
         return _text_block(f"[image omitted: {unsupported} is not a supported image format]")
     header, _, data = url.partition(",")
     mime_part = header[len("data:"):].split(";", 1)[0].strip()
@@ -650,9 +654,10 @@ def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     retire = outbound_image_retire_count([n for _, n in carriers], reserved)
     for block, _ in carriers[len(carriers) - retire:]:
         placeholder = _text_block("[screenshot removed to save context]")
-        block["content"] = [
+        # The image is gone: a native envelope's "you can see it" sibling text goes with it.
+        block["content"] = scrub_native_vision_claims_in_parts([
             placeholder if _block_type(b) == "image" else b for b in block["content"]
-        ]
+        ])
 
 
 def _ensure_leading_user_turn(result: list[dict[str, Any]]) -> None:

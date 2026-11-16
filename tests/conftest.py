@@ -1394,6 +1394,20 @@ def _isolate_computer_use_approval_state():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_image_rejection_registry():
+    """Forget process-wide image rejections after every test.
+
+    Send-path code records (and renews) ``agent.image_rejection_registry`` entries for any
+    agent whose route rejected images; a leaked entry closes the native vision lane for a
+    later test on the same provider/model. Teardown-only, and a ``sys.modules`` probe so
+    the fixture never imports the module into unrelated test processes.
+    """
+    yield
+    if (mod := sys.modules.get("agent.image_rejection_registry")) is not None:
+        mod.clear()
+
+
+@pytest.fixture(autouse=True)
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.
 

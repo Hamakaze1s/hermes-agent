@@ -16,6 +16,8 @@ from typing import Any, Callable, Iterable, NamedTuple
 
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
+from agent.image_rejection_registry import note_rejection
+from agent.vision_claim_text import scrub_native_vision_claims_in_parts
 from agent.vision_message_prep import _provider_model_key
 
 logger = logging.getLogger(__name__)
@@ -374,6 +376,8 @@ def _strip_images_from_messages(messages: list) -> bool:
         new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)]
         if len(new_parts) < len(content):
             found = True
+            # The image is gone: a native envelope's "you can see it" text must go with it.
+            new_parts = scrub_native_vision_claims_in_parts(new_parts)
             if new_parts:
                 msg["content"] = new_parts
                 # Rewriting a stamped live dict stales its persisted row; pop the marker.
@@ -440,9 +444,15 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
     that accepts images gets them again.
+
+    Every send for such a route renews the process-wide record: this agent's set never
+    expires, so if the TTL'd record lapsed while the agent still strips, tools would reopen
+    the native lane and hand it envelopes this very function removes.
     """
-    if _provider_model_key(agent) not in agent._image_rejecting_models:
+    key = _provider_model_key(agent)
+    if key not in agent._image_rejecting_models:
         return False
+    note_rejection(*key)
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 
 

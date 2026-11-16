@@ -155,6 +155,19 @@ def assemble_api_request(
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
+    # A model already known to 400 on list-type tool content gets text-only tool messages
+    # up front instead of a doomed send + strip-and-retry per request (the retry rewrites
+    # the prefix and breaks the cache). Per-call copy only — history keeps its images.
+    # BEFORE eviction: eviction turns a stale tool image into a text-only *list*, which this
+    # strip skips (it only flattens lists that carry images) — the endpoint would still 400.
+    from agent.image_rejection_registry import note_rejection
+    from agent.vision_message_prep import _provider_model_key
+
+    _route_key = _provider_model_key(agent)
+    if _route_key in (getattr(agent, "_no_list_tool_content_models", None) or ()):
+        # Renew the shared record so tools keep off the native lane while this agent strips.
+        note_rejection(*_route_key)
+        agent._try_strip_image_parts_from_tool_messages(api_messages, remember_model=False)
     # Send-path vision eviction (#89296): compression only strips stale screenshots
     # when prune fires, and the Anthropic adapter's keep-window never sees
     # OpenAI-style tool-result image_url parts. The per-call clone is rewritten in

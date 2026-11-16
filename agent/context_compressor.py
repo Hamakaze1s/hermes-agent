@@ -45,6 +45,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from agent.vision_claim_text import scrub_native_vision_claims, scrub_native_vision_claims_in_parts
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -1426,10 +1427,13 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
 
 
 def _replace_image_parts(parts: Any, placeholder: str) -> Optional[list[Any]]:
-    """New parts list with every image part replaced by a text placeholder; None if no images."""
+    """New parts list with every image part replaced by a text placeholder; None if no images.
+    Surviving text is scrubbed of the native envelope's "you can see it" claim."""
     if not isinstance(parts, list) or not any(_is_image_part(p) for p in parts):
         return None
-    return [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
+    return scrub_native_vision_claims_in_parts(
+        [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
+    )
 
 
 def _tool_result_parts(content: Any) -> Any:
@@ -1446,8 +1450,8 @@ def _strip_images_from_tool_msg(msg: dict[str, Any]) -> Optional[dict[str, Any]]
     """Copy of a tool message with image payloads replaced (stale ``api_content`` dropped); ``None`` if nothing to strip."""
     content = msg.get("content")
     if isinstance(content, dict) and content.get("_multimodal"):
-        summary = content.get("text_summary") or "[screenshot removed to save context]"
-        return _rewritten(msg, f"[screenshot removed] {str(summary)[:200]}")
+        summary = scrub_native_vision_claims(str(content.get("text_summary") or "")) or "[screenshot removed to save context]"
+        return _rewritten(msg, f"[screenshot removed] {summary[:200]}")
     stripped = _replace_image_parts(content, "[screenshot removed to save context]")
     return None if stripped is None else _rewritten(msg, stripped)
 
