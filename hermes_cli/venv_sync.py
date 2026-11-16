@@ -356,6 +356,15 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if _is_tail_script(root, sys.argv[0]):
         return None
 
+    # Fixtures and probe scripts launched straight from tests/ must not trigger a dependency sync:
+    # they run under an explicit interpreter with a throwaway HERMES_HOME, so the build is wasted,
+    # and its re-exec lands the child in a runtime built for that data root — one without the test
+    # extras (fixtures importing `ruamel`/`uvicorn` then fail). Only the spawn shape is skipped;
+    # prepare_launch itself stays fully exercisable from tests that call it directly.
+    invoked_from = Path(sys.argv[0]).resolve()
+    if "tests" in invoked_from.parts and (root / "tests") in invoked_from.parents:
+        return None
+
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
@@ -615,7 +624,12 @@ def relaunch_command(
     else:
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
-        body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
+        script = Path(argv[0]).absolute()
+        # -I implies -P, so CPython never prepends the script's directory; a re-launched
+        # script must still resolve its sibling imports exactly as `<python> <script>` would
+        # (test fixtures import helpers that sit next to them).
+        prefix += f"sys.path.insert(0, {str(script.parent)!r}); "
+        body = f"runpy.run_path({str(script)!r}, run_name='__main__')"
     return [str(python), *options, "-I", "-c", prefix + body]
 
 

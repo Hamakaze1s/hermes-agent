@@ -35,6 +35,16 @@ _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_P
 # file as "not a payload") lands on <HERMES_HOME>/manifest.json. The first lazy import of
 # hermes_bootstrap inside a test makes that probe; it is checkout detection, not Hermes state.
 _CHECKOUT_PAYLOAD_MANIFEST = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json"))
+# Same default layout: PM keeps its install state in <HERMES_HOME>/installs/<key>/, and resolving
+# which environment is committed for this checkout reads facts.json there. That is dependency
+# resolution, not Hermes state — reads stay allowed, changes do not.
+_PM_INSTALLS_ROOT = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "installs"))
+# PM's tool store (<HERMES_HOME>/tools) is what a developer PATH points at: terminal session init
+# probes the interpreters/CLIs there, which is command lookup, not Hermes state.
+_PM_TOOLS_ROOT = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "tools"))
+# uv's package cache under the home: PM resolves/reads it when building an environment; a cache
+# probe is not Hermes state either (writes stay refused here — the build owns its own cache).
+_PM_UV_CACHE_ROOT = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "uv-cache"))
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -86,6 +96,12 @@ class HomeIOGuard:
             if metadata and (absolute == "/proc" or absolute.startswith("/proc" + os.sep)):
                 return
             if absolute == _CHECKOUT_PAYLOAD_MANIFEST and not destructive:
+                return
+            if _within(absolute, _PM_INSTALLS_ROOT) and not destructive:
+                return
+            if _within(absolute, _PM_TOOLS_ROOT) and not destructive:
+                return
+            if _within(absolute, _PM_UV_CACHE_ROOT) and not destructive:
                 return
             resolved = self._refuse_installed_app_change(value, absolute) if destructive else None
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
