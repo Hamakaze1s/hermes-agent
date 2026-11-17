@@ -215,6 +215,28 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         return self._handle(ref)
 
+    def pending_states(self, session_ids):
+        """``{session_id: 'idle'|'running'|'unknown'}`` for many sessions in one pass.
+
+        The batched twin of ``_handle``'s state derivation, for worker threads: same ``settling``
+        masking, one admissions query for the whole roster instead of one per session.
+        """
+        from hermes_state_runtime import pending_admission_states
+        session_ids = list(session_ids)
+        raw = pending_admission_states(self.db, session_ids=session_ids)
+        states = {}
+        for sid in session_ids:
+            statuses = set(raw.get(sid, ()))
+            live = self.sessions.get(sid)
+            if live is not None and live.settling:
+                # Snapshot before iterating: the writer (commit_and_publish) mutates this dict
+                # under event_stream.lock from another thread, and a concurrent pop during the
+                # generator raises "dictionary changed size during iteration".
+                statuses.update(row['status'] for row in tuple(dict(live.settling).values()))
+            states[sid] = ('unknown' if 'unknown' in statuses
+                           else 'running' if 'started' in statuses else 'idle')
+        return states
+
     async def attach(self, actor, ref):
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]

@@ -197,6 +197,33 @@ def local_receipt(db, session_id):
         raise RuntimeStoreError('storage_unavailable') from exc
 
 
+def local_targets(db, session_ids) -> dict:
+    """``{session_id: receipt entry.session_id}`` for many sessions, one query per id chunk.
+
+    ``local_receipt`` json.loads the whole receipt (mean ~24 KB on this store) while a picker
+    listing reads only ``entry.session_id``: ``json_extract`` gets it inside SQLite. A missing or
+    unreadable receipt simply has no entry, matching ``_local_target``'s "nothing to read" arm.
+    """
+    from hermes_state_common import _id_chunks, _placeholders
+    ids = [sid for sid in dict.fromkeys(session_ids) if sid]
+    if not ids:
+        return {}
+    found: dict = {}
+    for chunk in _id_chunks(ids):
+        keys = [POLICY_PREFIX + sid for sid in chunk]
+        # json_valid guard: json_extract raises "malformed JSON" on a bad receipt, and that
+        # exception propagates through _read_all's storage-error hook — which classifies it as
+        # structural corruption and latches the whole store for the process. local_receipt turned
+        # the same case into "no receipt"; one CASE keeps that shape.
+        sql = ("SELECT key, CASE WHEN json_valid(value) "
+               "THEN json_extract(value, '$.entry.session_id') END FROM state_meta "
+               f"WHERE key IN ({_placeholders(keys)})")
+        for key, target in db._read_all(sql, keys):
+            if isinstance(key, str) and key.startswith(POLICY_PREFIX):
+                found[key[len(POLICY_PREFIX):]] = target
+    return found
+
+
 def end_idle_local_session(db, *, epoch, session_id, target_id, reason):
     """Stamp ``ended_at`` on *target_id* only while the logical *session_id*'s FIFO is idle.
 

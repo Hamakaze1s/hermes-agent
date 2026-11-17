@@ -160,6 +160,52 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
+# Columns a picker reads off a session row. ``SessionDB.get_session`` additionally resolves the
+# whole system prompt and tool manifest by joining ``system_prompts`` twice (mean ~57 KB, max
+# ~142 KB per row on this store) and drains the token queue first — a live listing fits neither.
+_SESSION_SUMMARY_COLUMNS = (
+    "id, source, title, started_at, message_count, model, hidden, archived, ended_at, "
+    "runtime_revision, runtime_generation"
+)
+
+
+def session_summaries(db, *, session_ids) -> dict[str, dict]:
+    """Listing projection of ``sessions`` rows: no prompt joins, no token flush, one query per chunk.
+
+    Batched twin of ``SessionDB.get_session`` for feeds that read only summary columns. Callers
+    that need the resolved prompt or exact post-flush token totals keep using ``get_session``.
+    """
+    from hermes_state_common import _id_chunks, _placeholders
+    ids = list(dict.fromkeys(sid for sid in session_ids if sid))
+    if not ids:
+        return {}
+    found: dict[str, dict] = {}
+    for chunk in _id_chunks(ids):
+        sql = (f"SELECT {_SESSION_SUMMARY_COLUMNS} FROM sessions "
+               f"WHERE id IN ({_placeholders(chunk)})")
+        for row in db._read_all(sql, chunk):
+            data = dict(row)
+            found[data['id']] = data
+    return found
+
+
+def pending_admission_states(db, *, session_ids) -> dict[str, set[str]]:
+    """``{session_id: {status, ...}}`` of pending admissions, one query per id chunk.
+    """
+    from hermes_state_common import _id_chunks, _placeholders
+    ids = list(dict.fromkeys(sid for sid in session_ids if sid))
+    if not ids:
+        return {}
+    found: dict[str, set[str]] = {}
+    for chunk in _id_chunks(ids):
+        sql = ("SELECT target_session_id, status FROM session_admissions "
+               f"WHERE status IN ('queued','started','unknown') "
+               f"AND target_session_id IN ({_placeholders(chunk)})")
+        for session_id, status in db._read_all(sql, chunk):
+            found.setdefault(session_id, set()).add(status)
+    return found
+
+
 _ANY_HEAD = object()
 
 

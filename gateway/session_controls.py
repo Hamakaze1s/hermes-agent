@@ -393,27 +393,35 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-        resolved = []
+        authorized = []
         for sid in tuple(self.authority.sessions):
             candidate = SessionRef(self.actor.profile_id, sid)
             try:
-                handle = await self.authority.resolve(self.actor, candidate)
+                # Same gate ``resolve`` applies, minus its per-session reads: every sid below is
+                # already in ``self.sessions``, so ``authorize`` answers from memory.
+                self.authority.authorize(self.actor, candidate, 'session:read')
             except RuntimeStoreError as exc:
                 if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
                     raise
                 continue
-            resolved.append((sid, handle))
+            authorized.append(sid)
 
         def _live_rows():
-            # One state.db read per live session (two for an idle one): off the loop, as the
-            # stored feed above. Each sqlite step drops and retakes the GIL, so under a CPU-bound
-            # thread (a hung plugin hook) this loop cost seconds and starved the liveness probe.
+            # Three batched reads for the whole roster, off the loop. ``get_session`` is
+            # deliberately unused here: it also materializes the resolved system prompt and tool
+            # manifest (mean ~57 KB a row), which a picker never reads — one frontend poll over
+            # the recovered local roster made that the gateway's largest CPU consumer.
             from gateway.session_local_close import closed_and_unviewed
+            from hermes_state_local import local_targets
+            from hermes_state_runtime import session_summaries
+            summaries = session_summaries(self.authority.db, session_ids=authorized)
+            states = self.authority.pending_states(authorized)
+            targets = local_targets(self.authority.db, authorized)
             rows = []
-            for sid, handle in resolved:
-                row = self.authority.db.get_session(sid)
+            for sid in authorized:
+                row = summaries.get(sid)
                 if row is None:
-                    # Deleted between resolve and this worker-thread read (a delete commits its
+                    # Deleted between authorize and this worker-thread read (a delete commits its
                     # transaction before it retires the live entry; prune has the same shape):
                     # the stored feed owns the row now, so this is no longer a live session.
                     continue
@@ -422,14 +430,15 @@ class AuthorityConnection:
                 if row.get('source') in INTERNAL_LISTING_SOURCES or (
                         not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                     continue
-                if closed_and_unviewed(self.authority, sid, handle):
+                state = states.get(sid, 'idle')
+                if closed_and_unviewed(self.authority, sid, state=state, rows=summaries, targets=targets):
                     # Closed by its last viewer and idle: main lists it as resumable (the stored
                     # feed), not as a live session.
                     continue
                 rows.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': state == 'running'})
             return rows
 
         sessions = await asyncio.to_thread(_live_rows)
